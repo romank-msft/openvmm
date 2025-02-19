@@ -140,6 +140,10 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
             drop(f);
             drop(f_fixed);
 
+            // Replicate the permissions
+            let perms = std::fs::metadata(path)?.permissions();
+            std::fs::set_permissions(path_fix, perms)?;
+
             // ...and then swap the file with the newly fixed file
             fs_err::rename(path_fix, path)?;
         }
