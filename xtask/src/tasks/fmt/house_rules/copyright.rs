@@ -142,6 +142,9 @@ pub fn check_copyright(path: &Path, fix: bool) -> anyhow::Result<()> {
             // copy over the rest of the file contents
             std::io::copy(&mut f, &mut f_fixed)?;
 
+            // Windows gets touchy if you try and rename files while there are open
+            // file handles.
+            drop(f);
             commit(f_fixed, path)?;
         }
     }
