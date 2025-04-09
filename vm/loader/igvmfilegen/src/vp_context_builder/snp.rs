@@ -29,6 +29,16 @@ pub enum InjectionType {
     Restricted,
 }
 
+/// The secure AVIC.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SecureAvic {
+    /// Offload APIC to the hardware.
+    /// TODO: should something like `Auto` if possible?
+    Enabled,
+    /// The paravisor emulates APIC.
+    Disabled,
+}
+
 /// A hardware SNP VP context, that is imported as a VMSA.
 #[derive(Debug)]
 pub struct SnpHardwareContext {
@@ -59,6 +69,7 @@ impl SnpHardwareContext {
         enlightened_uefi: bool,
         shared_gpa_boundary: u64,
         injection_type: InjectionType,
+        secure_avic: SecureAvic,
     ) -> Self {
         let mut vmsa: SevVmsa = FromZeros::new_zeroed();
 
@@ -92,6 +103,16 @@ impl SnpHardwareContext {
                 vmsa.sev_features.set_prevent_host_ibs(true);
                 vmsa.sev_features.set_vmsa_reg_prot(true);
                 vmsa.sev_features.set_vtom(false);
+
+                // TODO: Read the spec and the LKML patches.
+                // TODO: The BSP's VMSA sets the secure AVIC to available here.
+                // TODO: What will happen if the hardware doesn't support it (pre-Turin)?
+                // TODO: Or we want to start with the disabled one as it is a long way to interrupts
+                // TODO: being processed and can change that before the first interrupt?
+                // TODO: For AP VMSA's this can be set later (during run time) based on CPUID?
+                // TODO: Or this is global because it is called features?
+                vmsa.sev_features
+                    .set_secure_avic(secure_avic == SecureAvic::Enabled);
                 vmsa.virtual_tom = 0;
             }
         }

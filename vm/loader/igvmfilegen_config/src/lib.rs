@@ -32,6 +32,17 @@ pub enum SnpInjectionType {
     Restricted,
 }
 
+/// Secure AVIC type.
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum SecureAvicType {
+    /// Offload APIC to the hardware.
+    /// TODO: should something like `Auto` if possible?
+    Enabled,
+    /// The paravisor emulates APIC.
+    Disabled,
+}
+
 /// The isolation type that should be used for the loader.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +66,8 @@ pub enum ConfigIsolationType {
         enable_debug: bool,
         /// The interrupt injection type to use for the highest vmpl.
         injection_type: SnpInjectionType,
+        /// Secure AVIC
+        secure_avic: SecureAvicType,
     },
     /// Intel TDX.
     Tdx {
