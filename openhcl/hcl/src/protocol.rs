@@ -175,8 +175,9 @@ pub struct hcl_hvcall {
 
 pub const HCL_REG_PAGE_OFFSET: i64 = 1 << 16;
 pub const HCL_VMSA_PAGE_OFFSET: i64 = 2 << 16;
-pub const MSHV_APIC_PAGE_OFFSET: i64 = 3 << 16;
+pub const MSHV_TDX_APIC_PAGE_OFFSET: i64 = 3 << 16;
 pub const HCL_VMSA_GUEST_VSM_PAGE_OFFSET: i64 = 4 << 16;
+pub const MSHV_SEV_AVIC_PAGE_OFFSET: i64 = 5 << 16;
 
 open_enum::open_enum! {
     /// 4 bits represent VTL0 enter mode.
