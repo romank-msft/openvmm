@@ -175,6 +175,9 @@ pub struct hcl_hvcall {
 
 pub const HCL_REG_PAGE_OFFSET: i64 = 1 << 16;
 pub const HCL_VMSA_PAGE_OFFSET: i64 = 2 << 16;
+// TODO: may need another constant if the kernel needs to allocate a page for
+//      the VTL1 secure AVICs. Currently the kernel figures out the type of the
+//      hardware isolation and allocates the page for VTL.
 pub const MSHV_APIC_PAGE_OFFSET: i64 = 3 << 16;
 pub const HCL_VMSA_GUEST_VSM_PAGE_OFFSET: i64 = 4 << 16;
 

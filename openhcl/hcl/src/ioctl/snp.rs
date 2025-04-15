@@ -25,12 +25,14 @@ use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
 use thiserror::Error;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::snp::SevVmsa;
 
 /// Runner backing for SNP partitions.
 pub struct Snp<'a> {
     vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
+    apic_pages: VtlArray<&'a UnsafeCell<SevAvicPage>, 2>,
 }
 
 /// Error returned by failing SNP operations.
@@ -176,11 +178,28 @@ impl MshvVtl {
 impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Snp { vmsa } = &vp.backing else {
+        let super::BackingState::Snp {
+            vtl0_apic_page,
+            vtl1_apic_page,
+            vmsa,
+        } = &vp.backing
+        else {
             return Err(NoRunner::MismatchedIsolation);
         };
 
+        // TODO: Register the VTL 1 AVIC page with the hypervisor.
+        // Specification: "SEV-ES Guest-Hypervisor Communication Block Standartization",
+        // 4.1.16.1 "Backing page support".
+        //
+        // The VTL 0 APIC page is registered by the kernel.
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+
+        // SAFETY: The mapping is held for the appropriate lifetime, and the
+        // APIC page is never accessed as any other type, or by any other location.
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
+
         Ok(Self {
+            apic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
             vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
         })
     }
