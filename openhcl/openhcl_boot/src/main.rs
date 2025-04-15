@@ -720,6 +720,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         // Chain in the setup data.
         setup_data_tail.next = core::ptr::from_ref(&*cc_data) as u64;
         setup_data_tail = &mut cc_data.header;
+
+        // TODO: auto enable secure AVIC if CPUID indicates it is supported
+        // and the guest interrupt control is supported.
     }
 
     let reserved_memory = reserved_memory_regions(partition_info, sidecar.as_ref());

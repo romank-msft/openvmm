@@ -119,6 +119,7 @@ where
         isolation_type,
         paravisor_present,
         shared_gpa_boundary_bits,
+        auto_enable_secure_apic: enable_secure_hardware_apic,
     } = importer.isolation_config();
 
     // If no explicit memory base is specified, load with relocation support.
@@ -467,6 +468,7 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        auto_enable_secure_avic: enable_secure_hardware_apic.into(),
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1043,6 +1045,7 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        auto_enable_secure_avic: false.into(),
     };
 
     importer
