@@ -603,6 +603,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         }
     } else {
         if p.isolation_type == IsolationType::Snp {
+            // TODO: form the SEV status or VMSA see if secure AVIC is alreaady enabled.
+            // proceeed if not.
             if p.auto_enable_secure_avic {
                 // TODO: 1. Check the CPUID flags
                 //       2. if supported, rebuild the VMSA (or have the second one in the IGVM file?)
