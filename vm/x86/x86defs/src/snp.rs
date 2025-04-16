@@ -788,14 +788,16 @@ pub struct SevStatusMsr {
     pub debug_swap: bool,
     pub prevent_host_ibs: bool,
     pub snp_btb_isolation: bool,
-    pub _rsvd1: bool,
+    pub vmpl_sss: bool,
     pub secure_tsc: bool,
-    pub _rsvd2: bool,
+    pub vmgexit_param: bool,
     pub _rsvd3: bool,
-    pub _rsvd4: bool,
+    pub ibs_virt: bool,
     pub _rsvd5: bool,
     pub vmsa_reg_prot: bool,
-    #[bits(47)]
+    pub smt_prot: bool,
+    pub secure_avic: bool,
+    #[bits(45)]
     _unused: u64,
 }
 

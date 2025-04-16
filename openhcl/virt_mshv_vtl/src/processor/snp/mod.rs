@@ -270,6 +270,7 @@ pub struct SnpBackedShared {
     pub(crate) cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
     tsc_aux_virtualized: bool,
+    secure_avic: bool,
 }
 
 impl SnpBackedShared {
@@ -284,16 +285,30 @@ impl SnpBackedShared {
                 .result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4])[3],
         )
         .invlpgb_count_max();
-        let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
+        let extended_sev_features = x86defs::cpuid::ExtendedSevFeaturesEax::from(
             params
                 .cpuid
                 .result(CpuidFunction::ExtendedSevFeatures.0, 0, &[0; 4])[0],
-        )
-        .tsc_aux_virtualization();
+        );
+        let tsc_aux_virtualized = extended_sev_features.tsc_aux_virtualization();
+
+        let msr = devmsr::MsrDevice::new(0).expect("open msr");
+        let secure_avic =
+            SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"))
+                .secure_avic();
+
+        // Sanity check through the CPUID leaf.
+        if secure_avic {
+            assert!(
+                extended_sev_features.secure_avic()
+                    && extended_sev_features.guest_intercept_control()
+            );
+        }
 
         Ok(Self {
             invlpgb_count_max,
             tsc_aux_virtualized,
+            secure_avic,
             cvm,
         })
     }
