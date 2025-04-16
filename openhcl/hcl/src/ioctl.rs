@@ -1550,6 +1550,7 @@ enum BackingState {
     Snp {
         vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
         vtl0_apic_page: MappedPage<SevAvicPage>,
+        /// VTL1 runs with the alternate interrupt injection.
         vtl1_apic_page: MemoryBlock,
     },
     Tdx {
