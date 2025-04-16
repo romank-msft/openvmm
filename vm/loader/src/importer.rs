@@ -321,6 +321,9 @@ pub struct IsolationConfig {
     pub shared_gpa_boundary_bits: Option<u8>,
 
     /// Enable the secure hardware APIC if the platform supports it.
+    /// TODO: see about moving into the Snp variant of
+    /// `IsolationConfig`. Is auto enabling possible? Seems to be the
+    /// partition property.
     pub auto_enable_secure_apic: bool,
 }
 
