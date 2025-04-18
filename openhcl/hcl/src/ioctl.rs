@@ -1555,7 +1555,6 @@ enum BackingState {
     },
     Tdx {
         vtl0_apic_page: MappedPage<VmxApicPage>,
-        // TODO: Once VTL0 works, add plumbing for VTL1.
         vtl1_apic_page: MemoryBlock,
     },
 }
