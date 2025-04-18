@@ -4,14 +4,28 @@
 //! SNP support for the bootshim.
 
 use super::address_space::LocalMap;
+use crate::PageAlign;
+use crate::host_params::shim_params::ShimParams;
 use core::arch::asm;
+use core::hint::black_box;
+use hvdef::HV_PAGE_SHIFT;
+use hvdef::HV_PAGE_SIZE;
+use hvdef::HvRegisterName;
+use hvdef::HvRegisterValue;
+use hvdef::HvX64RegisterName;
+use hvdef::HvX64RegisterSevControl;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
+use minimal_rt::arch::fault;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
+use x86defs::snp::GhcbMsr;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
-pub struct Ghcb;
 
 #[derive(Debug)]
 pub enum AcceptGpaStatus {
@@ -78,6 +92,123 @@ impl Ghcb {
 
         // SAFETY: Restoring previous GHCB value is safe.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, previous_value) };
+    }
+
+    fn get_register(name: HvX64RegisterName) -> Result<HvRegisterValue, hvdef::HvError> {
+        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
+
+        // SAFETY: Always safe to read the GHCB MSR. The correctness of the bit pattern
+        // is guaranteed by the hardware.
+        let previous_ghcb = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
+
+        let header = hvdef::hypercall::GetSetVpRegisters {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index: hvdef::HV_VP_INDEX_SELF,
+            target_vtl: HvInputVtl::CURRENT_VTL,
+            rsvd: [0; 3],
+        };
+
+        // SAFETY: The GHCB page comes from the measured BSP VMSA, must be set.
+        let ghcb_page = unsafe {
+            core::slice::from_raw_parts_mut(
+                (previous_ghcb.pfn() << HV_PAGE_SHIFT) as *mut u8,
+                HV_PAGE_SIZE as usize,
+            )
+        };
+
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header.write_to_prefix(ghcb_page).unwrap();
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+        name.write_to_prefix(&mut ghcb_page[HEADER_SIZE..]).unwrap();
+
+        let control = hvdef::hypercall::Control::new()
+            .with_code(hvdef::HypercallCode::HvCallGetVpRegisters.0)
+            .with_rep_count(1)
+            .with_fast(false);
+        let ghcb = GhcbMsr::new()
+            .with_pfn(previous_ghcb.pfn())
+            .with_info(GhcbInfo::SPECIAL_HYPERCALL.0)
+            .with_extra_data(control.into_bits());
+
+        // SAFETY: Writing known good value to the GHCB MSR, following the GHCB protocol.
+        let ghcb: GhcbMsr = unsafe {
+            core::mem::transmute({
+                write_msr(X86X_AMD_MSR_GHCB, ghcb.into_bits());
+                Self::sev_vmgexit();
+                read_msr(X86X_AMD_MSR_GHCB)
+            })
+        };
+
+        assert!(ghcb.info() == GhcbInfo::HYPERCALL_OUTPUT.0);
+
+        let output = HypercallOutput::from_bits(((ghcb.into_bits() >> 16) & 0xFFF) as u64);
+        output.result()?;
+
+        let val = HvRegisterValue::read_from_prefix(&ghcb_page).unwrap().0;
+
+        // SAFETY: Restoring previous GHCB value is safe.
+        unsafe { write_msr(X86X_AMD_MSR_GHCB, previous_ghcb.into_bits()) };
+
+        Ok(val)
+    }
+
+    fn set_register(name: HvRegisterName, value: HvRegisterValue) -> Result<(), hvdef::HvError> {
+        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
+
+        // SAFETY: Always safe to read the GHCB MSR. The correctness of the bit pattern
+        // is guaranteed by the hardware.
+        let previous_ghcb = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
+
+        let header = hvdef::hypercall::GetSetVpRegisters {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index: hvdef::HV_VP_INDEX_SELF,
+            target_vtl: HvInputVtl::CURRENT_VTL,
+            rsvd: [0; 3],
+        };
+        let reg = hvdef::hypercall::HvRegisterAssoc {
+            name,
+            pad: Default::default(),
+            value,
+        };
+
+        // SAFETY: The GHCB page comes from the measured BSP VMSA, must be set.
+        let ghcb_page = unsafe {
+            core::slice::from_raw_parts_mut(
+                (previous_ghcb.pfn() << HV_PAGE_SHIFT) as *mut u8,
+                HV_PAGE_SIZE as usize,
+            )
+        };
+
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header.write_to_prefix(ghcb_page).unwrap();
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+        reg.write_to_prefix(&mut ghcb_page[HEADER_SIZE..]).unwrap();
+
+        let control = hvdef::hypercall::Control::new()
+            .with_code(hvdef::HypercallCode::HvCallGetVpRegisters.0)
+            .with_rep_count(1)
+            .with_fast(false);
+        let ghcb = GhcbMsr::new()
+            .with_pfn(previous_ghcb.pfn())
+            .with_info(GhcbInfo::SPECIAL_HYPERCALL.0)
+            .with_extra_data(control.into_bits());
+
+        // SAFETY: Writing known good value to the GHCB MSR, following the GHCB protocol.
+        let ghcb: GhcbMsr = unsafe {
+            core::mem::transmute({
+                write_msr(X86X_AMD_MSR_GHCB, ghcb.into_bits());
+                Self::sev_vmgexit();
+                read_msr(X86X_AMD_MSR_GHCB)
+            })
+        };
+
+        assert!(ghcb.info() == GhcbInfo::HYPERCALL_OUTPUT.0);
+
+        // SAFETY: Restoring previous GHCB value is safe.
+        unsafe { write_msr(X86X_AMD_MSR_GHCB, previous_ghcb.into_bits()) };
+
+        let output = HypercallOutput::from_bits(((ghcb.into_bits() >> 16) & 0xFFF) as u64);
+        output.result()
     }
 }
 
