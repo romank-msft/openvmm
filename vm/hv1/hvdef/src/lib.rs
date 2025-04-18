@@ -2262,6 +2262,8 @@ registers! {
 
         // AMD SEV configuration MSRs
         SevControl = 0x00090040,
+        SevGhcbGpa = 0x00090041,
+        SevAvicGpa = 0x00090043,
     }
 }
 

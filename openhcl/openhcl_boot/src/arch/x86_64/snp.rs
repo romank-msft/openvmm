@@ -26,6 +26,58 @@ use x86defs::snp::GhcbMsr;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+#[repr(C, packed)]
+struct GhcbSaveArea {
+    reserved_0x0: [u8; 203],
+    cpl: u8,
+    reserved_0xcc: [u8; 116],
+    xss: u64,
+    reserved_0x148: [u8; 24],
+    dr7: u64,
+    reserved_0x168: [u8; 16],
+    rip: u64,
+    reserved_0x180: [u8; 88],
+    rsp: u64,
+    reserved_0x1e0: [u8; 24],
+    rax: u64,
+    reserved_0x200: [u8; 264],
+    rcx: u64,
+    rdx: u64,
+    rbx: u64,
+    reserved_0x320: [u8; 8],
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    reserved_0x380: [u8; 16],
+    sw_exit_code: u64,
+    sw_exit_info_1: u64,
+    sw_exit_info_2: u64,
+    sw_scratch: u64,
+    reserved_0x3b0: [u8; 56],
+    xcr0: u64,
+    valid_bitmap: [u8; 16],
+    x87_state_gpa: u64,
+}
+
+#[repr(C, packed)]
+pub struct Ghcb {
+    save: GhcbSaveArea,
+    reserved_save: [u8; 2048 - size_of::<GhcbSaveArea>()],
+    shared_buffer: [u8; 2032],
+    reserved_0xff0: [u8; 10],
+    protocol_version: u16,
+    ghcb_usage: u32,
+}
+
+const _: () = assert!(size_of::<Ghcb>() == HV_PAGE_SIZE as usize);
 
 #[derive(Debug)]
 pub enum AcceptGpaStatus {
@@ -222,7 +274,7 @@ fn pvalidate(
     if large_page {
         assert!(va % x86defs::X64_LARGE_PAGE_SIZE == 0);
     } else {
-        assert!(va % hvdef::HV_PAGE_SIZE == 0)
+        assert!(va % HV_PAGE_SIZE == 0)
     }
 
     let validate_page = validate as u32;
@@ -268,7 +320,7 @@ pub fn set_page_acceptance(
     range: MemoryRange,
     validate: bool,
 ) -> Result<(), AcceptGpaError> {
-    let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / hvdef::HV_PAGE_SIZE;
+    let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
     let mut page_count = range.page_count_4k();
     let mut page_base = range.start_4k_gpn();
 
@@ -307,4 +359,110 @@ pub fn set_page_acceptance(
     }
 
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpdateFeaturesStep {
+    NotStarted = 0,
+    TemporaryVmsa,
+    BootVmsa,
+}
+
+struct UpdateFeaturesState {
+    step: UpdateFeaturesStep,
+    temp_vmsa: u64,
+    boot_vmsa: u64,
+}
+
+/// Upgrade the VMSA features to the desired ones.
+///
+/// The BSP boots off of the most hardware-compatible VMSA. The function:
+///     1. Switches to a temporary VMSA, which is the copy of the boot VMSA,
+///     2. Updates the features of the boot VMSA,
+///     3. Switches back to the boot VMSA,
+///     4. Marks the temporary VMSA as inactive.
+///
+/// The sequence allows a transparent for the other code upgrade at the cost of the 4KiB.
+/// The shared part of the GHCB is used for persistence between switching the VMSA pages.
+/// The assumption is that the shared part of the GHCB page has is zeroed out in the IGVM file.
+///
+/// Due to running in the identity mapping, the GVAs and GPAs are the same.
+///
+/// The callers must ensure not to run any code touching GHCB prior to this function due to
+/// which it is marked unsafe -- the compiler cannot prove that the GHCB is not used through
+/// the pressent form of the code.
+///
+/// Data manipulation by a malious hypervisor with the GHCB content won't break the confidentiality,
+/// might cause DoS o performance issues if the feature upgrade is prevented.
+pub unsafe fn update_vmsa_features(p: &ShimParams) {
+    if !p.auto_enable_secure_avic {
+        return;
+    }
+
+    // TODO: from the SEV status or VMSA see if secure AVIC is alreaady enabled.
+    // proceeed if not.
+
+    // SAFETY: The GHCB MSR is always safe to read.
+    let ghcb = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
+    let ghcb = unsafe {
+        ((ghcb.pfn() << HV_PAGE_SHIFT) as *mut PageAlign<Ghcb>)
+            .as_mut()
+            .expect("GHCB is not NULL")
+    };
+
+    // SAFETY: INitially zeroed out which is a valid state, later controlled by this function.
+    // The callers must ensure not to run any code touching GHCB prior to this function due to
+    // which it is marked unsafe -- the compiler cannot prove that the GHCB is not used through
+    // the pressent form of the code.
+    let upgrade_state =
+        unsafe { (ghcb.0.shared_buffer.as_mut_ptr() as *mut UpdateFeaturesState).as_mut() }
+            .expect("the GHCB shared buffer is not NULL");
+
+    match upgrade_state.step {
+        UpdateFeaturesStep::NotStarted => {
+            // TODO: See if the feature upgrade is required.
+
+            let sev_control =
+                Ghcb::get_register(HvX64RegisterName::SevControl).expect("get SEV control");
+            let sev_control =
+                HvX64RegisterSevControl::read_from_bytes(&sev_control.0.as_ne_bytes())
+                    .expect("read SEV control into the structure");
+
+            // SAFETY: The VMSA is a 4KiB page, and the SEV control register points to it.
+            // If the hypervsisor returns an invalid value, the guest confidentiality won't be compromised,
+            // DoS is not a concern.
+            let boot_vmsa = sev_control.vmsa_gpa_page_number();
+
+            // A temporary scratch page is allocated in the IGVM file right after the
+            // shim parameters page.
+            //
+            // Cannot use the static data without nasty hacks as the BSS is wiped out when entering
+            // the shim.
+            let temp_vmsa = p.scratch_page_addr;
+
+            upgrade_state.temp_vmsa = temp_vmsa;
+            upgrade_state.boot_vmsa = boot_vmsa;
+            upgrade_state.step = UpdateFeaturesStep::TemporaryVmsa;
+
+            // TODO: copy the VMSA page to the temporary page.
+            // TODO: RMP adjust the temp VMSA page to mark it as a VMSA page.
+
+            let temp_sev_control = sev_control
+                .with_vmsa_gpa_page_number(upgrade_state.temp_vmsa as u64 >> HV_PAGE_SHIFT);
+
+            // Switch to the temporary VMSA to reenter the shim.
+            Ghcb::set_register(
+                HvX64RegisterName::SevControl.into(),
+                HvRegisterValue::from(temp_sev_control.into_bits()),
+            )
+            .expect("must be ablle to get SEV control");
+
+            // Cannot get here
+            black_box(if upgrade_state.step != UpdateFeaturesStep::TemporaryVmsa {
+                fault();
+            });
+        }
+        UpdateFeaturesStep::TemporaryVmsa => todo!(),
+        UpdateFeaturesStep::BootVmsa => todo!(),
+    }
 }
