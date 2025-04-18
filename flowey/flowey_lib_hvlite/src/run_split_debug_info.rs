@@ -34,15 +34,13 @@ impl SimpleFlowNode for Node {
 
         let platform = ctx.platform();
         let arch_str = match arch {
-            CommonArch::X86_64 => {
-                match platform {
-                    FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                        FlowPlatformLinuxDistro::Fedora =>"x86_64",
-                        FlowPlatformLinuxDistro::Ubuntu => "x86-64",
-                        FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
-                    },
-                    _ => anyhow::bail!("Unsupported platform"),
-                }
+            CommonArch::X86_64 => match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora => "x86_64",
+                    FlowPlatformLinuxDistro::Ubuntu => "x86-64",
+                    FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+                },
+                _ => anyhow::bail!("Unsupported platform"),
             },
             CommonArch::Aarch64 => "aarch64",
         };
@@ -50,9 +48,7 @@ impl SimpleFlowNode for Node {
         let installed_objcopy =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec![format!(
-                        "binutils-{arch_str}-linux-gnu"
-                    )],
+                    package_names: vec![format!("binutils-{arch_str}-linux-gnu")],
                     done: side_effect,
                 },
             );
