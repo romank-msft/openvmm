@@ -28,6 +28,8 @@ use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
+#[cfg(target_arch = "x86_64")]
+use arch::snp::update_vmsa_features;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
@@ -602,15 +604,11 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
             enable_enlightened_panic();
         }
     } else {
+        #[cfg(target_arch = "x86_64")]
         if p.isolation_type == IsolationType::Snp {
-            // TODO: form the SEV status or VMSA see if secure AVIC is alreaady enabled.
-            // proceeed if not.
-            if p.auto_enable_secure_avic {
-                // TODO: 1. Check the CPUID flags
-                //       2. if supported, rebuild the VMSA (or have the second one in the IGVM file?)
-                //       3. Set the SEV control register to jump to it (add int3/assert for sanity/security)
-                //       4. Mark the old VMSA as "not busy"
-            }
+            // SAFETY: The function requires no GHCB accesses before calling it
+            // which is upheld by the caller.
+            unsafe { update_vmsa_features(&p) };
         }
     }
 
