@@ -53,6 +53,9 @@ pub struct ShimParamsRaw {
     pub bounce_buffer_start: i64,
     /// The size of the bounce buffer range. This is 0 if unavailable.
     pub bounce_buffer_size: u64,
+    /// A scratch page for re-entries. Cannot rely on the static data as
+    /// BSS is zeroed out.
+    pub scratch_page_offset: i64,
     /// Use the hardware APIC if available.
     pub auto_enable_secure_avic: u64,
 }

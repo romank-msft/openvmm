@@ -294,6 +294,11 @@ where
 
     offset += boot_params_size;
 
+    let boot_scratch_base = offset;
+    let boot_scratch_size = HV_PAGE_SIZE;
+
+    offset += boot_scratch_size;
+
     let cmdline_base = offset;
     let (cmdline, policy) = match command_line {
         CommandLineType::Static(val) => (val, CommandLinePolicy::STATIC),
@@ -468,6 +473,7 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        scratch_page_offset: calculate_shim_offset(boot_scratch_base),
         auto_enable_secure_avic: enable_secure_hardware_apic.into(),
     };
 
@@ -480,6 +486,16 @@ where
             "underhill-shim-params",
             BootPageAcceptance::Exclusive,
             shim_params.as_bytes(),
+        )
+        .map_err(Error::Importer)?;
+
+    importer
+        .import_pages(
+            boot_scratch_base / HV_PAGE_SIZE,
+            boot_scratch_size / HV_PAGE_SIZE,
+            "underhill-shim-scratch",
+            BootPageAcceptance::Exclusive,
+            &[],
         )
         .map_err(Error::Importer)?;
 
@@ -990,6 +1006,11 @@ where
 
     next_addr += shim_params_size;
 
+    let shim_scratch_base = next_addr;
+    let shim_scratch_size = HV_PAGE_SIZE;
+
+    next_addr += shim_scratch_size;
+
     let parameter_region_size = PARAVISOR_VTL2_CONFIG_REGION_PAGE_COUNT_MAX * HV_PAGE_SIZE;
     let parameter_region_start = next_addr;
     next_addr += parameter_region_size;
@@ -1045,6 +1066,7 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        scratch_page_offset: calculate_shim_offset(shim_scratch_base),
         auto_enable_secure_avic: false.into(),
     };
 
@@ -1055,6 +1077,16 @@ where
             "underhill-shim-params",
             BootPageAcceptance::Exclusive,
             shim_params.as_bytes(),
+        )
+        .map_err(Error::Importer)?;
+
+    importer
+        .import_pages(
+            shim_scratch_base / HV_PAGE_SIZE,
+            shim_scratch_size / HV_PAGE_SIZE,
+            "underhill-shim-scratch",
+            BootPageAcceptance::Exclusive,
+            &[],
         )
         .map_err(Error::Importer)?;
 
