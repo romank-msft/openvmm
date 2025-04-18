@@ -107,6 +107,9 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
+    /// Scratch page for re-entries. Cannot rely on the static data as
+    /// BSS is zeroed out.
+    pub scratch_page_addr: u64,
     /// Enable secure AVIC if supported.
     pub auto_enable_secure_avic: bool,
 }
@@ -135,6 +138,7 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
+            scratch_page_offset,
             auto_enable_secure_avic,
         } = raw;
 
@@ -169,6 +173,7 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
+            scratch_page_addr: shim_base_address.wrapping_add_signed(scratch_page_offset),
             auto_enable_secure_avic: auto_enable_secure_avic != 0,
         }
     }
