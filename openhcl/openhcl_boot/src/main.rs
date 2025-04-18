@@ -601,17 +601,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         if p.isolation_type == IsolationType::None {
             enable_enlightened_panic();
         }
-    } else {
-        if p.isolation_type == IsolationType::Snp {
-            // TODO: form the SEV status or VMSA see if secure AVIC is alreaady enabled.
-            // proceeed if not.
-            if p.auto_enable_secure_avic {
-                // TODO: 1. Check the CPUID flags
-                //       2. if supported, rebuild the VMSA (or have the second one in the IGVM file?)
-                //       3. Set the SEV control register to jump to it (add int3/assert for sanity/security)
-                //       4. Mark the old VMSA as "not busy"
-            }
-        }
     }
 
     // Enable early log output if requested in the static command line.

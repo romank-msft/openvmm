@@ -894,30 +894,26 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
                 paravisor_present: self.loader.paravisor_present,
                 isolation_type: IsolationType::None,
                 shared_gpa_boundary_bits: None,
-                auto_enable_secure_apic: false,
             },
             LoaderIsolationType::Vbs { .. } => IsolationConfig {
                 paravisor_present: self.loader.paravisor_present,
                 isolation_type: IsolationType::Vbs,
                 shared_gpa_boundary_bits: None,
-                auto_enable_secure_apic: false,
             },
             LoaderIsolationType::Snp {
                 shared_gpa_boundary_bits,
                 policy: _,
                 injection_type: _,
-                secure_avic,
+                secure_avic: _,
             } => IsolationConfig {
                 paravisor_present: self.loader.paravisor_present,
                 isolation_type: IsolationType::Snp,
                 shared_gpa_boundary_bits,
-                auto_enable_secure_apic: matches!(secure_avic, SecureAvic::Auto),
             },
             LoaderIsolationType::Tdx { .. } => IsolationConfig {
                 paravisor_present: self.loader.paravisor_present,
                 isolation_type: IsolationType::Tdx,
                 shared_gpa_boundary_bits: Some(TDX_SHARED_GPA_BOUNDARY_BITS),
-                auto_enable_secure_apic: false,
             },
         }
     }

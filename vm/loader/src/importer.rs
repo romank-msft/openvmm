@@ -319,11 +319,6 @@ pub struct IsolationConfig {
 
     /// If there is a shared gpa boundary, the number of bits.
     pub shared_gpa_boundary_bits: Option<u8>,
-
-    /// Enable the secure hardware APIC if the platform supports it.
-    /// TODO: see about moving into the Snp variant of
-    /// `IsolationConfig`.
-    pub auto_enable_secure_apic: bool,
 }
 
 #[derive(Debug, Default)]

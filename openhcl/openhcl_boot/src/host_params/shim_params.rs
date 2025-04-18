@@ -107,8 +107,6 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
-    /// Enable secure AVIC if supported.
-    pub auto_enable_secure_avic: bool,
 }
 
 impl ShimParams {
@@ -135,7 +133,6 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
-            auto_enable_secure_avic,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -169,7 +166,6 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
-            auto_enable_secure_avic: auto_enable_secure_avic != 0,
         }
     }
 

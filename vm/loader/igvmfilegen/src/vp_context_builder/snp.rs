@@ -32,8 +32,6 @@ pub enum InjectionType {
 /// The secure AVIC.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SecureAvic {
-    /// Offload AVIC to the hardware if available.
-    Auto,
     /// Offload AVIC to the hardware.
     Enabled,
     /// The paravisor emulates APIC.

@@ -132,7 +132,6 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
             paravisor_present: false,
             isolation_type: loader::importer::IsolationType::None,
             shared_gpa_boundary_bits: None,
-            auto_enable_secure_apic: false,
         }
     }
 

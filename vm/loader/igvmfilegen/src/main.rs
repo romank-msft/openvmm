@@ -194,7 +194,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
                     }
                 },
                 secure_avic: match secure_avic {
-                    SecureAvicType::Auto => vp_context_builder::snp::SecureAvic::Auto,
                     SecureAvicType::Enabled => vp_context_builder::snp::SecureAvic::Enabled,
                     SecureAvicType::Disabled => vp_context_builder::snp::SecureAvic::Disabled,
                 },

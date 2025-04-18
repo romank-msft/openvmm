@@ -36,8 +36,6 @@ pub enum SnpInjectionType {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum SecureAvicType {
-    /// Offload AVIC to the hardware if available.
-    Auto,
     /// Offload AVIC to the hardware.
     Enabled,
     /// The paravisor emulates APIC.
