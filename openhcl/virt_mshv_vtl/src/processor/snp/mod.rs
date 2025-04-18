@@ -66,6 +66,7 @@ use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevInvlpgbEcx;
@@ -446,6 +447,12 @@ impl BackingPrivate for SnpBacked {
         this.runner
             .set_vp_registers_hvcall(Vtl::Vtl0, values)
             .expect("set_vp_registers hypercall for direct overlays should succeed");
+
+        // Enable APIC offload if supported for VTL 0.
+        this.set_apic_offload(GuestVtl::Vtl0, this.shared.secure_avic);
+        this.backing.cvm.lapics[GuestVtl::Vtl0]
+            .lapic
+            .enable_offload();
     }
 
     type StateAccess<'p, 'a>
@@ -507,7 +514,7 @@ impl BackingPrivate for SnpBacked {
         dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError> {
         this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let vmsa = this.runner.vmsa_mut(vtl);
+            let (avic_page, vmsa) = this.runner.secure_avic_page_vmsa_mut(vtl);
             if vmsa.event_inject().valid()
                 && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
             {
@@ -520,6 +527,7 @@ impl BackingPrivate for SnpBacked {
                 .access(&mut SnpApicClient {
                     partition: this.partition,
                     vmsa,
+                    avic_page,
                     dev,
                     vmtime: &this.vmtime,
                     vtl,
@@ -604,6 +612,18 @@ impl BackingPrivate for SnpBacked {
     }
 }
 
+impl UhProcessor<'_, SnpBacked> {
+    fn set_apic_offload(&mut self, vtl: GuestVtl, offload: bool) {
+        assert!(vtl == GuestVtl::Vtl0);
+        // Share the common architectural parts with TDX.
+        if offload {
+            // TODO: Load the emulated state into the hardware
+        } else {
+            // TODO: Load the hardware state into the emulator
+        }
+    }
+}
+
 fn virt_seg_to_snp(val: SegmentRegister) -> SevSelector {
     SevSelector {
         selector: val.selector,
@@ -683,6 +703,7 @@ fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Opti
 struct SnpApicClient<'a, T> {
     partition: &'a UhPartitionInner,
     vmsa: VmsaWrapper<'a, &'a mut SevVmsa>,
+    avic_page: &'a mut SevAvicPage,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
     vtl: GuestVtl,
@@ -715,8 +736,24 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
-        unreachable!()
+        assert_eq!(self.vtl, GuestVtl::Vtl0);
+        pull_apic_offload(self.avic_page)
     }
+}
+
+fn pull_apic_offload(page: &mut SevAvicPage) -> ([u32; 8], [u32; 8]) {
+    let mut irr = [0; 8];
+    let mut isr = [0; 8];
+    for (((irr, page_irr), isr), page_isr) in irr
+        .iter_mut()
+        .zip(page.irr.iter_mut())
+        .zip(isr.iter_mut())
+        .zip(page.isr.iter_mut())
+    {
+        *irr = std::mem::take(&mut page_irr.value);
+        *isr = std::mem::take(&mut page_isr.value);
+    }
+    (irr, isr)
 }
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
@@ -1213,7 +1250,7 @@ impl UhProcessor<'_, SnpBacked> {
             .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::Run(err)))?;
 
         let entered_from_vtl = next_vtl;
-        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
         if vmsa.v_intr_cntrl().guest_busy() {
@@ -1263,6 +1300,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .access(&mut SnpApicClient {
                     partition: self.partition,
                     vmsa,
+                    avic_page,
                     dev,
                     vmtime: &self.vmtime,
                     vtl: entered_from_vtl,
@@ -1270,7 +1308,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .lazy_eoi();
         }
 
-        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
         let sev_error_code = SevExitCode(vmsa.guest_error_code());
 
         let stat = match sev_error_code {
@@ -1773,11 +1811,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
     fn lapic_read(&mut self, address: u64, data: &mut [u8]) {
         let vtl = self.vtl;
+        let (avic_page, vmsa) = self.vp.runner.secure_avic_page_vmsa_mut(vtl);
         self.vp.backing.cvm.lapics[vtl]
             .lapic
             .access(&mut SnpApicClient {
                 partition: self.vp.partition,
-                vmsa: self.vp.runner.vmsa_mut(vtl),
+                vmsa,
+                avic_page,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
                 vtl,
@@ -1787,11 +1827,13 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
     fn lapic_write(&mut self, address: u64, data: &[u8]) {
         let vtl = self.vtl;
+        let (avic_page, vmsa) = self.vp.runner.secure_avic_page_vmsa_mut(vtl);
         self.vp.backing.cvm.lapics[vtl]
             .lapic
             .access(&mut SnpApicClient {
                 partition: self.vp.partition,
-                vmsa: self.vp.runner.vmsa_mut(vtl),
+                vmsa,
+                avic_page,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
                 vtl,

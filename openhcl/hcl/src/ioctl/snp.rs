@@ -32,7 +32,7 @@ use x86defs::snp::SevVmsa;
 /// Runner backing for SNP partitions.
 pub struct Snp<'a> {
     vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
-    apic_pages: VtlArray<&'a UnsafeCell<SevAvicPage>, 2>,
+    avic_pages: VtlArray<&'a UnsafeCell<SevAvicPage>, 2>,
 }
 
 /// Error returned by failing SNP operations.
@@ -199,7 +199,7 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
 
         Ok(Self {
-            apic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
+            avic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
             vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
         })
     }
@@ -260,5 +260,32 @@ impl<'a> ProcessorRunner<'a, Snp<'a>> {
                 VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
             })
             .into_inner()
+    }
+
+    /// Gets a reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page(&self, vtl: GuestVtl) -> &SevAvicPage {
+        // SAFETY: the APIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &*self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_mut(&mut self, vtl: GuestVtl) -> &mut SevAvicPage {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        unsafe { &mut *self.state.avic_pages[vtl].get() }
+    }
+
+    /// Gets a mutable reference to the secure AVIC page for the given VTL.
+    pub fn secure_avic_page_vmsa_mut(
+        &mut self,
+        vtl: GuestVtl,
+    ) -> (&mut SevAvicPage, VmsaWrapper<'_, &mut SevVmsa>) {
+        // SAFETY: the AVIC pages will not be concurrently accessed by the processor
+        // while this VP is in VTL2.
+        let avic_page = unsafe { &mut *self.state.avic_pages[vtl].get() };
+        let vmsa = self.vmsa_mut(vtl);
+
+        (avic_page, vmsa)
     }
 }
