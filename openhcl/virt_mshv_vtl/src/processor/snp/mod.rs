@@ -1039,7 +1039,7 @@ impl UhProcessor<'_, SnpBacked> {
             return;
         }
 
-        let vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let (avic_page, vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
         let gp = if is_write {
             let value = (vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32);
 
@@ -1048,6 +1048,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .access(&mut SnpApicClient {
                     partition: self.partition,
                     vmsa,
+                    avic_page,
                     dev,
                     vmtime: &self.vmtime,
                     vtl: entered_from_vtl,
@@ -1071,6 +1072,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .access(&mut SnpApicClient {
                     partition: self.partition,
                     vmsa,
+                    avic_page,
                     dev,
                     vmtime: &self.vmtime,
                     vtl: entered_from_vtl,
@@ -1308,7 +1310,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .lazy_eoi();
         }
 
-        let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
+        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
         let sev_error_code = SevExitCode(vmsa.guest_error_code());
 
         let stat = match sev_error_code {
