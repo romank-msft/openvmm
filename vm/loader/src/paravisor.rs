@@ -42,6 +42,9 @@ use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
 use thiserror::Error;
 use x86defs::GdtEntry;
+use x86defs::LargeGdtEntry;
+use x86defs::SegmentSelector;
+use x86defs::Tss64;
 use x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
@@ -288,6 +291,14 @@ where
     let gdt_size = HV_PAGE_SIZE;
     offset += gdt_size;
 
+    let double_fault_stack_base_address = offset;
+    let double_fault_stack_size = HV_PAGE_SIZE;
+    offset += double_fault_stack_size;
+
+    let tss64_base_address = offset;
+    let tss64_size = HV_PAGE_SIZE;
+    offset += tss64_size;
+
     let boot_params_base = offset;
     let boot_params_size = HV_PAGE_SIZE;
 
@@ -494,29 +505,76 @@ where
     // ds, es, fs, gs, ss are linearSelector
     // cs is linearCode64Selector
 
-    // GDT is laid out as:
-    // [null_selector, null_selector, linearCode64Selector, linearSelector]
+    // GDT is laid out as (counting by the small entries):
+    //  0: null descriptor,
+    //  1: null descriptor,
+    //  2: linear code64 descriptor,
+    //  3. linear descriptor for data
+    //  4: TSS64 descriptor, takes two entries in the GDT,
+    //  6: here you can add more descriptors.
+
     let default_data_attributes: u16 = X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES.into();
-    let default_code_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
-    let gdt = [
+    let default_code64_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
+    let default_tss64_attributes: u16 = X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into();
+    let mut gdt = [
+        // A large null descriptor.
         GdtEntry::new_zeroed(),
         GdtEntry::new_zeroed(),
+        // Code descriptor for the long mode.
         GdtEntry {
             limit_low: 0xffff,
-            attr_low: default_code_attributes as u8,
-            attr_high: (default_code_attributes >> 8) as u8,
+            attr_low: default_code64_attributes as u8,
+            attr_high: (default_code64_attributes >> 8) as u8,
             ..GdtEntry::new_zeroed()
         },
+        // Data descriptor.
         GdtEntry {
             limit_low: 0xffff,
             attr_low: default_data_attributes as u8,
             attr_high: (default_data_attributes >> 8) as u8,
             ..GdtEntry::new_zeroed()
         },
+        // A placeholder for the TSS64 (large) descriptor
+        GdtEntry::new_zeroed(),
+        GdtEntry::new_zeroed(),
     ];
-    let gdt_entry_size = size_of::<GdtEntry>();
-    let linear_selector_offset = 3 * gdt_entry_size;
-    let linear_code64_selector_offset = 2 * gdt_entry_size;
+
+    // Fill out the TSS64 data, set up the double fault stack
+    // (accounting for the 32 bytes of the home area).
+    let tss64 = Tss64 {
+        _mbz0: 0,
+        rsp: [0; 3],
+        ist: [0, double_fault_stack_base_address - 32, 0, 0, 0, 0, 0, 0],
+        _mbz1: 0,
+        _mbz2: 0,
+        io_map_base: 0,
+    };
+
+    const LINEAR_CODE64_DESCRIPTOR_INDEX: usize = 2;
+    const LINEAR_DATA_DESCRIPTOR_INDEX: usize = 3;
+    const LINEAR_TSS64_DESCRIPTOR_INDEX: usize = 4;
+
+    let linear_code64_descriptor_selector =
+        SegmentSelector::kernel_gdt_selector(LINEAR_CODE64_DESCRIPTOR_INDEX as u16);
+    let linear_data_descriptor_selector =
+        SegmentSelector::kernel_gdt_selector(LINEAR_DATA_DESCRIPTOR_INDEX as u16);
+    let linear_tss64_descriptor_selector =
+        SegmentSelector::kernel_gdt_selector(LINEAR_TSS64_DESCRIPTOR_INDEX as u16);
+
+    gdt[LINEAR_TSS64_DESCRIPTOR_INDEX..LINEAR_TSS64_DESCRIPTOR_INDEX + 2].copy_from_slice(
+        &LargeGdtEntry {
+            limit_low: size_of::<Tss64>() as u16 - 1,
+            base_low: tss64_base_address as u16,
+            base_middle: (tss64_base_address >> 16) as u8,
+            attr_low: default_tss64_attributes as u8,
+            attr_high: (default_tss64_attributes >> 8) as u8,
+            base_high: (tss64_base_address >> 24) as u8,
+            base_upper: (tss64_base_address >> 32) as u32,
+            mbz: 0,
+        }
+        .get_gdt_entries(),
+    );
+    let gdt = gdt; // Drop mutability to prevent accidental changes.
 
     importer.import_pages(
         gdt_base_address / HV_PAGE_SIZE,
@@ -524,6 +582,22 @@ where
         "underhill-gdt",
         BootPageAcceptance::Exclusive,
         gdt.as_bytes(),
+    )?;
+
+    importer.import_pages(
+        tss64_base_address / HV_PAGE_SIZE,
+        tss64_size / HV_PAGE_SIZE,
+        "underhill-tss64",
+        BootPageAcceptance::Exclusive,
+        tss64.as_bytes(),
+    )?;
+
+    importer.import_pages(
+        double_fault_stack_base_address / HV_PAGE_SIZE,
+        double_fault_stack_size / HV_PAGE_SIZE,
+        "underhill-double-fault-stack",
+        BootPageAcceptance::Exclusive,
+        &[],
     )?;
 
     let mut import_reg = |register| {
@@ -535,11 +609,11 @@ where
     // Import GDTR and selectors.
     import_reg(X86Register::Gdtr(TableRegister {
         base: gdt_base_address,
-        limit: (size_of::<GdtEntry>() * 4 - 1) as u16,
+        limit: (size_of::<GdtEntry>() * 6 - 1) as u16,
     }))?;
 
     let ds = SegmentRegister {
-        selector: linear_selector_offset as u16,
+        selector: linear_data_descriptor_selector.into_bits(),
         base: 0,
         limit: 0xffffffff,
         attributes: default_data_attributes,
@@ -551,21 +625,16 @@ where
     import_reg(X86Register::Ss(ds))?;
 
     let cs = SegmentRegister {
-        selector: linear_code64_selector_offset as u16,
+        selector: linear_code64_descriptor_selector.into_bits(),
         base: 0,
         limit: 0xffffffff,
-        attributes: default_code_attributes,
+        attributes: default_code64_attributes,
     };
     import_reg(X86Register::Cs(cs))?;
 
-    // TODO: Workaround an OS repo bug where enabling a higher VTL zeros TR
-    //       instead of setting it to the reset default state. Manually set it
-    //       to the reset default state until the OS repo is fixed.
-    //
-    //       In the future, we should just not set this at all.
     import_reg(X86Register::Tr(SegmentRegister {
-        selector: 0x0000,
-        base: 0x00000000,
+        selector: linear_tss64_descriptor_selector.into_bits(),
+        base: tss64_base_address,
         limit: 0x0000FFFF,
         attributes: X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into(),
     }))?;

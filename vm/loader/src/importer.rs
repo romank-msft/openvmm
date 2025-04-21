@@ -87,6 +87,7 @@ impl From<TableRegister> for igvm::registers::TableRegister {
 pub struct SegmentRegister {
     pub base: u64,
     pub limit: u32,
+    // TODO: Make this be of the SegementSelector type.
     pub selector: u16,
     pub attributes: u16,
 }
