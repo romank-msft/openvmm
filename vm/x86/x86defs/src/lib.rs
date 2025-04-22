@@ -121,10 +121,13 @@ impl<'a> arbitrary::Arbitrary<'a> for SegmentAttributes {
 #[derive(PartialEq, Eq)]
 pub struct SegmentSelector {
     #[bits(2)]
-    pub rpl: u8, // Request Privilege Level (ring 0-3, where 0 is kernel)
-    pub ldt_table: bool, // 0 - GDT, 1 - LDT
+    /// Request Privilege Level (ring 0-3, where 0 is the highest)
+    pub rpl: u8,
+    /// Table indicator: 0 - GDT, 1 - LDT
+    pub ti: bool,
     #[bits(13)]
-    pub index: u16, // Index in the descriptor table
+    /// Index in the descriptor table
+    pub index: u16,
 }
 
 impl SegmentSelector {
@@ -132,12 +135,8 @@ impl SegmentSelector {
         self.0
     }
 
-    pub fn from_index(index: u16, rpl: u8) -> Self {
-        Self::new().with_index(index).with_rpl(rpl)
-    }
-
-    pub fn kernel_gdt_selector(index: u16) -> Self {
-        Self::new().with_index(index)
+    pub fn from_gdt_index(index: u16, rpl: u8) -> Self {
+        Self::new().with_index(index).with_rpl(rpl).with_ti(false)
     }
 }
 

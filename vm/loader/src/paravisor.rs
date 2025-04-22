@@ -553,13 +553,14 @@ where
     const LINEAR_CODE64_DESCRIPTOR_INDEX: usize = 2;
     const LINEAR_DATA_DESCRIPTOR_INDEX: usize = 3;
     const LINEAR_TSS64_DESCRIPTOR_INDEX: usize = 4;
+    const RPL: u8 = 0x00; // requested priviledge level: the highest
 
     let linear_code64_descriptor_selector =
-        SegmentSelector::kernel_gdt_selector(LINEAR_CODE64_DESCRIPTOR_INDEX as u16);
+        SegmentSelector::from_gdt_index(LINEAR_CODE64_DESCRIPTOR_INDEX as u16, RPL);
     let linear_data_descriptor_selector =
-        SegmentSelector::kernel_gdt_selector(LINEAR_DATA_DESCRIPTOR_INDEX as u16);
+        SegmentSelector::from_gdt_index(LINEAR_DATA_DESCRIPTOR_INDEX as u16, RPL);
     let linear_tss64_descriptor_selector =
-        SegmentSelector::kernel_gdt_selector(LINEAR_TSS64_DESCRIPTOR_INDEX as u16);
+        SegmentSelector::from_gdt_index(LINEAR_TSS64_DESCRIPTOR_INDEX as u16, RPL);
 
     gdt[LINEAR_TSS64_DESCRIPTOR_INDEX..LINEAR_TSS64_DESCRIPTOR_INDEX + 2].copy_from_slice(
         &LargeGdtEntry {
