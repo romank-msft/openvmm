@@ -45,7 +45,7 @@ use x86defs::GdtEntry;
 use x86defs::LargeGdtEntry;
 use x86defs::SegmentSelector;
 use x86defs::Tss64;
-use x86defs::X64_BUSY_TSS_SEGMENT_ATTRIBUTES;
+use x86defs::X64_AVAILABLE_TSS_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES;
 use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
 use x86defs::cpuid::CpuidFunction;
@@ -515,7 +515,7 @@ where
 
     let default_data_attributes: u16 = X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES.into();
     let default_code64_attributes: u16 = X64_DEFAULT_CODE_SEGMENT_ATTRIBUTES.into();
-    let default_tss64_attributes: u16 = X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into();
+    let default_tss64_attributes: u16 = X64_AVAILABLE_TSS_SEGMENT_ATTRIBUTES.into();
     let mut gdt = [
         // A large null descriptor.
         GdtEntry::new_zeroed(),
@@ -637,7 +637,7 @@ where
         selector: linear_tss64_descriptor_selector.into_bits(),
         base: tss64_base_address,
         limit: 0x0000FFFF,
-        attributes: X64_BUSY_TSS_SEGMENT_ATTRIBUTES.into(),
+        attributes: X64_AVAILABLE_TSS_SEGMENT_ATTRIBUTES.into(),
     }))?;
 
     // Set system registers to state expected by the boot shim, 64 bit mode with

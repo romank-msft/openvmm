@@ -81,6 +81,9 @@ pub const X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttrib
     .with_present(true)
     .with_non_system_segment(true)
     .with_segment_type(0x3);
+pub const X64_AVAILABLE_TSS_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttributes::new()
+    .with_present(true)
+    .with_segment_type(0x9);
 pub const X64_BUSY_TSS_SEGMENT_ATTRIBUTES: SegmentAttributes = SegmentAttributes::new()
     .with_present(true)
     .with_segment_type(0xb);
