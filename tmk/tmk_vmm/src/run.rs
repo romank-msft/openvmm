@@ -56,7 +56,7 @@ impl CommonState {
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
             .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
-            .build(1)
+            .build(opts.processor_count)
             .context("failed to build processor topology")?;
 
         #[cfg(guest_arch = "aarch64")]
@@ -65,7 +65,7 @@ impl CommonState {
                 gic_distributor_base: 0xff000000,
                 gic_redistributors_base: 0xff020000,
             })
-            .build(1)
+            .build(opts.processor_count)
             .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
@@ -154,6 +154,7 @@ impl CommonState {
 impl RunContext<'_> {
     pub async fn run(
         &mut self,
+        vp_count: u32,
         guest_memory: &GuestMemory,
         caps: &PartitionCapabilities,
         test: &load::TestInfo,
@@ -167,6 +168,7 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "x86_64")]
             {
                 load::load_x86(
+                    vp_count,
                     &self.state.memory_layout,
                     guest_memory,
                     &self.state.processor_topology,
@@ -178,6 +180,7 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "aarch64")]
             {
                 load::load_aarch64(
+                    vp_count,
                     &self.state.memory_layout,
                     guest_memory,
                     &self.state.processor_topology,

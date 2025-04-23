@@ -87,6 +87,7 @@ impl RunContext<'_> {
         let mut threads = Vec::new();
         let r = self
             .run(
+                vps.len() as u32,
                 &guest_memory,
                 partition.caps(),
                 test,

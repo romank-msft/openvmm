@@ -18,6 +18,8 @@ pub struct StartInput {
     pub command: u64,
     /// The test index.
     pub test_index: u64,
+    /// VP count
+    pub vp_count: u64,
 }
 
 /// A 64-bit TMK test descriptor.

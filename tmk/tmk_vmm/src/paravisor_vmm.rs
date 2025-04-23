@@ -67,11 +67,17 @@ impl RunContext<'_> {
 
         let partition = Arc::new(partition);
 
-        self.run(m.vtl0(), partition.caps(), test, async |_this, runner| {
-            let [vp] = vps.try_into().ok().unwrap();
-            start_vp(vp, runner).await?;
-            Ok(())
-        })
+        self.run(
+            vps.len() as u32,
+            m.vtl0(),
+            partition.caps(),
+            test,
+            async |_this, runner| {
+                let [vp] = vps.try_into().ok().unwrap();
+                start_vp(vp, runner).await?;
+                Ok(())
+            },
+        )
         .await
     }
 }

@@ -58,6 +58,9 @@ struct Options {
     /// for example.
     #[clap(long)]
     disable_offloads: bool,
+    #[clap(long, short, default_value = "1")]
+    /// The number of processors to use for the test.
+    processor_count: u32,
     /// The path to the TMK binary.
     #[clap(long)]
     tmk: PathBuf,

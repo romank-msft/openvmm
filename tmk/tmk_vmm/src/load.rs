@@ -27,6 +27,7 @@ use zerocopy::IntoBytes;
 /// Loads a TMK, returning the initial registers for the BSP.
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub fn load_x86(
+    vp_count: u32,
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
     processor_topology: &ProcessorTopology<X86Topology>,
@@ -35,7 +36,7 @@ pub fn load_x86(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::x86::X86InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(&mut loader, tmk, test)?;
+    let load_info = load_common(vp_count, &mut loader, tmk, test)?;
 
     let page_table_base = load_info.next_available_address;
     let page_tables = page_table::x64::build_page_tables_64(
@@ -85,6 +86,7 @@ pub fn load_x86(
 
 #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 pub fn load_aarch64(
+    vp_count: u32,
     memory_layout: &MemoryLayout,
     guest_memory: &GuestMemory,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
@@ -93,7 +95,7 @@ pub fn load_aarch64(
     test: &TestInfo,
 ) -> anyhow::Result<Arc<virt::aarch64::Aarch64InitialRegs>> {
     let mut loader = vm_loader::Loader::new(guest_memory.clone(), memory_layout, Vtl::Vtl0);
-    let load_info = load_common(&mut loader, tmk, test)?;
+    let load_info = load_common(vp_count, &mut loader, tmk, test)?;
 
     let mut import_reg = |reg| {
         loader
@@ -113,6 +115,7 @@ pub fn load_aarch64(
 }
 
 fn load_common<R: Debug + GuestArch>(
+    vp_count: u32,
     loader: &mut vm_loader::Loader<'_, R>,
     tmk: &File,
     test: &TestInfo,
@@ -131,6 +134,7 @@ fn load_common<R: Debug + GuestArch>(
     let start_input = tmk_protocol::StartInput {
         command: crate::run::COMMAND_ADDRESS,
         test_index: test.index,
+        vp_count: vp_count as u64,
     };
 
     let start_input_addr = load_info.next_available_address;
