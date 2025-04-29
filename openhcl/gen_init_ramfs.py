@@ -706,7 +706,9 @@ def create_cpio_from_dir(top_dir: str, output_file: str, compression: str):
                     # print(file_entry)
                     cpio.write(file_entry)
             written_uncompressed = cpio.written_bytes()
-            written_compressed = ostream.tell()
+    # tell() is not reliable for the compressed stream
+    # so we need to use the size of the file
+    written_compressed = os.path.getsize(output_file)
 
     return CpioStat(written_uncompressed, written_compressed)
 
