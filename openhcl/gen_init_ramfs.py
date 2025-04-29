@@ -111,9 +111,12 @@ class CpioEntry(object):
         return None
 
     def write(self, buffer: BinaryIO) -> int:
-        def align_on_dword(buffer):
+        def align_on_dword(buffer) -> int:
+            aligned = 0
             while buffer.tell() & 3 != 0:
+                aligned += 1
                 buffer.write(b'\x00')
+            return aligned
 
         name_bytes = bytearray(self.name, 'ascii')
         name_bytes.append(0)
@@ -144,9 +147,15 @@ class CpioEntry(object):
 
         assert(len(header_bytes) == 110)
 
+        written = 0
+
         buffer.write(header_bytes)
+        written += len(header_bytes)
+
         buffer.write(name_bytes)
-        align_on_dword(buffer)
+        written += len(name_bytes)
+
+        written += align_on_dword(buffer)
 
         self.content.seek(0);
         while True:
@@ -154,11 +163,12 @@ class CpioEntry(object):
             if len(data) == 0:
                 break
             buffer.write(data)
+            written += len(data)
 
-        align_on_dword(buffer)
+        written += align_on_dword(buffer)
 
         # Return the number of bytes written to the buffer
-        return buffer.tell()
+        return written
 
 class FileEntry(CpioEntry):
     def __init__(self, inode, name, location, mode, uid, gid, hard_links) -> None:
@@ -365,6 +375,7 @@ class CpioRamFs:
         trailer.write(self.buffer_obj)
 
         while self.buffer_obj.tell() & 511 != 0:
+            self.written += 1
             self.buffer_obj.write(b'\x00')
 
         self.buffer_obj.close()
@@ -658,7 +669,9 @@ def create_cpio_from_config(config_files: List[str], output_file: str, compressi
             for entry in config.entries():
                 cpio.write(entry)
             written_uncompressed = cpio.written_bytes()
-            written_compressed = ostream.tell()
+    # tell() is not reliable for the compressed stream
+    # so we need to use the size of the file
+    written_compressed = os.path.getsize(output_file)
 
     return CpioStat(written_uncompressed, written_compressed)
 
