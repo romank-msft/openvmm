@@ -1471,7 +1471,12 @@ impl UhProcessor<'_, SnpBacked> {
                 &mut self.backing.exit_stats[entered_from_vtl].vmgexit
             }
 
-            SevExitCode::NMI | SevExitCode::PAUSE | SevExitCode::SMI | SevExitCode::VMGEXIT => {
+            SevExitCode::NMI
+            | SevExitCode::PAUSE
+            | SevExitCode::SMI
+            | SevExitCode::VMGEXIT
+            | SevExitCode::BUSLOCK
+            | SevExitCode::IDLE_HLT => {
                 // Ignore intercept processing if the guest exited due to an automatic exit.
                 &mut self.backing.exit_stats[entered_from_vtl].automatic_exit
             }
@@ -1533,9 +1538,12 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             _ => {
+                if (sev_error_code.0 as i64) < 0 {
+                    panic!("SEV error exit code {sev_error_code:x?}");
+                }
                 debug_assert!(
                     false,
-                    "Received unexpected exit code {}",
+                    "Received unexpected exit code {:x?}",
                     vmsa.guest_error_code()
                 );
                 &mut self.backing.exit_stats[entered_from_vtl].unexpected
