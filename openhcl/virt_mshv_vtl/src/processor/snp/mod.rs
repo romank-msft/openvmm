@@ -1539,7 +1539,7 @@ impl UhProcessor<'_, SnpBacked> {
             _ => {
                 tracing::error!(
                     "SEV exit code {sev_error_code:x?} sev features {:x?} v_intr_control {:x?} event inject {:x?} \
-                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?} virtual_tom {:x?} guest_error_code {:x?} \
+                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?} virtual_tom {:x?} \
                     efer {:x?} cr4 {:x?} cr3 {:x?} cr0 {:x?} rflag {:x?} rip {:x?} next rip {:x?}",
                     vmsa.sev_features(),
                     vmsa.v_intr_cntrl(),
@@ -1550,7 +1550,6 @@ impl UhProcessor<'_, SnpBacked> {
                     vmsa.exit_info2(),
                     vmsa.exit_int_info(),
                     vmsa.virtual_tom(),
-                    vmsa.guest_error_code(),
                     vmsa.efer(),
                     vmsa.cr4(),
                     vmsa.cr3(),
