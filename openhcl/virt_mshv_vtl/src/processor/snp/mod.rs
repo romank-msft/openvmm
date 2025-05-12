@@ -642,7 +642,6 @@ fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Opti
     // and use that to set btb_isolation, prevent_host_ibs, and VMSA register protection.
     let msr = devmsr::MsrDevice::new(0).expect("open msr");
     let sev_status = SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
-    tracing::info!(?vtl, ?sev_status, "VMSA creation");
 
     // BUGBUG: this isn't fully accurate--the hypervisor can try running
     // from this at any time, so we need to be careful to set the field
@@ -679,8 +678,8 @@ fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Opti
     // must always have the SVME bit set).
     vmsa.set_efer(x86defs::X64_EFER_SVME);
 
-    let features = vmsa.sev_features();
-    tracing::info!(?vtl, ?features, "VMSA features");
+    let sev_features = vmsa.sev_features();
+    tracing::info!(?vtl, ?sev_status, ?sev_features, "VMSA features");
 }
 
 struct SnpApicClient<'a, T> {
