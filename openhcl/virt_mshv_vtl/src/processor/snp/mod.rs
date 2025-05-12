@@ -66,6 +66,7 @@ use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
 use x86defs::RFlags;
+use x86defs::apic::X2APIC_MSR_BASE;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::SecureAvicControl;
 use x86defs::snp::SevAvicIncompleteIpiInfo1;
@@ -1709,7 +1710,6 @@ impl UhProcessor<'_, SnpBacked> {
                 // instruction pointer) or a trap (where the hardware
                 // advances the instruction pointer).
                 let is_write = no_accel_info.write_access();
-                let msr = no_accel_info.apic_register_number().0;
                 let is_fault = !no_accel_info.write_access()
                     || matches!(
                         no_accel_info.apic_register_number(),
@@ -1740,6 +1740,7 @@ impl UhProcessor<'_, SnpBacked> {
                             | SevAvicRegisterNumber::IRR6
                             | SevAvicRegisterNumber::IRR7
                     );
+                let msr = X2APIC_MSR_BASE + no_accel_info.apic_register_number().0;
                 self.handle_msr_access(dev, entered_from_vtl, msr, is_write, is_fault);
 
                 &mut self.backing.exit_stats[entered_from_vtl].avic_no_accel
