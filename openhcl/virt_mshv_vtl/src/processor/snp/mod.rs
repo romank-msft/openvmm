@@ -335,7 +335,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         check_rflags: bool,
         dev: &impl CpuIo,
     ) -> bool {
-        let vmsa = this.runner.vmsa_mut(vtl);
+        let (avic_page, vmsa) = this.runner.secure_avic_page_vmsa_mut(vtl);
         if vmsa.event_inject().valid()
             && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
         {
@@ -348,6 +348,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             .access(&mut SnpApicClient {
                 partition: this.partition,
                 vmsa,
+                avic_page,
                 dev,
                 vmtime: &this.vmtime,
                 vtl,
