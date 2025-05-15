@@ -77,7 +77,7 @@ cat <<EOF > ${SNP_MANIFEST_FILE}
             },
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
+                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=static_elf OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
                     "memory_page_count": 245760,
                     "uefi": false,
                     "static_elf": {
@@ -104,7 +104,7 @@ cat <<EOF > ${DIRECT_MANIFEST_FILE}
             "isolation_type": "none",
             "image": {
                 "openhcl": {
-                    "command_line": "OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
+                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=static_elf OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
                     "memory_page_count": 245760,
                     "uefi": false,
                     "static_elf": {
