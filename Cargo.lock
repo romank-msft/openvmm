@@ -9047,6 +9047,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtl0_playground"
+version = "0.0.0"
+dependencies = [
+ "aarch64defs",
+ "arrayvec",
+ "cfg-if",
+ "crc32fast",
+ "fdt",
+ "host_fdt_parser",
+ "hvdef",
+ "igvm_defs",
+ "loader_defs",
+ "memory_range",
+ "minimal_rt",
+ "minimal_rt_build",
+ "safe_intrinsics",
+ "sha2",
+ "sidecar_defs",
+ "tdcall",
+ "underhill_confidentiality",
+ "x86defs",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
 name = "vtl2_settings_proto"
 version = "0.0.0"
 dependencies = [
