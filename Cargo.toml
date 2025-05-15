@@ -17,6 +17,8 @@ members = [
   "openhcl/openvmm_hcl",
   "openhcl/sidecar",
   "openhcl/vmfirmwareigvm_dll",
+  # random test stuff
+  "openhcl/vtl0_playground",
   # tmk
   "tmk/tmk_vmm",
   "tmk/simple_tmk",
