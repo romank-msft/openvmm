@@ -297,6 +297,8 @@ pub struct LinuxInfo {
 pub struct ElfInfo {
     /// The memory the image was loaded into.
     pub region: PageRegionDescriptor,
+    /// The VP context for the image.
+    pub vp_context: PageRegionDescriptor,
 }
 
 /// Measured config about UEFI loaded into VTL0.

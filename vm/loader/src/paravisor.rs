@@ -805,6 +805,10 @@ where
                 base_page_number: gpa / HV_PAGE_SIZE,
                 page_count: size / HV_PAGE_SIZE,
             },
+            vp_context: PageRegionDescriptor {
+                base_page_number: vp_context_page,
+                page_count: 1,
+            },
         };
 
         // Deposit the vp context.
