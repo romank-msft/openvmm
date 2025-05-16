@@ -340,7 +340,7 @@ where
             ghcb_page_base / HV_PAGE_SIZE,
             1,
             "underhill-shim-snp-ghcb",
-            BootPageAcceptance::Exclusive,
+            BootPageAcceptance::ExclusiveUnmeasured,
             &[],
         )?;
         ghcb_pfn = Some(ghcb_page_base / HV_PAGE_SIZE);
@@ -351,7 +351,7 @@ where
             additional_page_base / HV_PAGE_SIZE,
             1,
             "underhill-shim-snp-additional-page-table",
-            BootPageAcceptance::Exclusive,
+            BootPageAcceptance::ExclusiveUnmeasured,
             &[],
         )?;
     }
