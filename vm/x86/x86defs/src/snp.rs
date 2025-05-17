@@ -669,6 +669,7 @@ open_enum::open_enum! {
         BASE = 0,
         HYPERCALL = 1,
         VTL_RETURN = 2,
+        INVALID = !0,
     }
 }
 

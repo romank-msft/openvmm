@@ -331,6 +331,17 @@ where
     // Flipping the C bit for the 2MiB will sramble the contents thus scrambling
     // much of the shim. Another page is allocated for the page table entries.
     if isolation_type == IsolationType::Snp {
+        let additional_page_count = 3;
+        let additional_page_base = offset;
+        offset += additional_page_count * HV_PAGE_SIZE;
+        importer.import_pages(
+            additional_page_base / HV_PAGE_SIZE,
+            additional_page_count,
+            "underhill-shim-snp-spare-pages",
+            BootPageAcceptance::ExclusiveUnmeasured,
+            &[],
+        )?;
+
         let ghcb_page_base = offset;
         offset += HV_PAGE_SIZE;
 
@@ -340,20 +351,10 @@ where
             ghcb_page_base / HV_PAGE_SIZE,
             1,
             "underhill-shim-snp-ghcb",
-            BootPageAcceptance::ExclusiveUnmeasured,
+            BootPageAcceptance::Shared,
             &[],
         )?;
         ghcb_pfn = Some(ghcb_page_base / HV_PAGE_SIZE);
-
-        let additional_page_base = offset;
-        offset += HV_PAGE_SIZE;
-        importer.import_pages(
-            additional_page_base / HV_PAGE_SIZE,
-            1,
-            "underhill-shim-snp-additional-page-table",
-            BootPageAcceptance::ExclusiveUnmeasured,
-            &[],
-        )?;
     }
 
     // Reserve space for the VTL2 reserved region.
