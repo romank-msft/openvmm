@@ -21,7 +21,6 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
-use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
@@ -30,65 +29,13 @@ use minimal_rt::arch::msr::write_msr;
 use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
+use x86defs::snp::GhcbPage;
+use x86defs::snp::GhcbSaveArea;
 use x86defs::snp::GhcbUsage;
 use x86defs::snp::SevExitCode;
+use x86defs::snp::SevIoAccessInfo;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
-
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
-struct GhcbSaveArea {
-    reserved_0x0: [u8; 203],
-    cpl: u8,
-    reserved_0xcc: [u8; 116],
-    xss: u64,
-    reserved_0x148: [u8; 24],
-    dr7: u64,
-    reserved_0x168: [u8; 16],
-    rip: u64,
-    reserved_0x180: [u8; 88],
-    rsp: u64,
-    reserved_0x1e0: [u8; 24],
-    rax: u64,
-    reserved_0x200: [u8; 264],
-    rcx: u64,
-    rdx: u64,
-    rbx: u64,
-    reserved_0x320: [u8; 8],
-    rbp: u64,
-    rsi: u64,
-    rdi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
-    reserved_0x380: [u8; 16],
-    sw_exit_code: u64,
-    sw_exit_info1: u64,
-    sw_exit_info2: u64,
-    sw_scratch: u64,
-    reserved_0x3b0: [u8; 56],
-    xcr0: u64,
-    valid_bitmap: [u8; 16],
-    x87_state_gpa: u64,
-}
-
-#[repr(C, packed)]
-#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
-pub struct GhcbPage {
-    save: GhcbSaveArea,
-    reserved_save: [u8; 2048 - size_of::<GhcbSaveArea>()],
-    shared_buffer: [u8; 2032],
-    reserved_0xff0: [u8; 10],
-    protocol_version: u16,
-    ghcb_usage: u32,
-}
-
-const _: () = assert!(size_of::<GhcbPage>() == HV_PAGE_SIZE as usize);
 
 static GHCB_PAGE: AtomicPtr<GhcbPage> = AtomicPtr::new(core::ptr::null_mut() as *mut GhcbPage);
 static GHCB_PREVIOUS: AtomicU64 = AtomicU64::new(0);
@@ -346,13 +293,12 @@ impl Ghcb {
         ghcb.save.sw_exit_code = SevExitCode::MSR.0;
         ghcb.save.sw_exit_info1 = 1;
         ghcb.save.sw_exit_info2 = 0;
-
-        ghcb.save.valid_bitmap[0] = 1u8 << offset_of!(GhcbSaveArea, rax) / 8;
-        ghcb.save.valid_bitmap[1] = (1u8 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, rdx) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
+        ghcb.save.valid_bitmap[0] = 1u64 << offset_of!(GhcbSaveArea, rax) / 8;
+        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, rdx) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
 
         Self::vmgs_exit();
 
@@ -367,12 +313,11 @@ impl Ghcb {
         ghcb.save.sw_exit_code = SevExitCode::MSR.0;
         ghcb.save.sw_exit_info1 = 0;
         ghcb.save.sw_exit_info2 = 0;
-
         ghcb.save.valid_bitmap[0] = 0;
-        ghcb.save.valid_bitmap[1] = (1u8 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u8 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
+        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
 
         Self::vmgs_exit();
 
@@ -382,24 +327,52 @@ impl Ghcb {
         ghcb.save.rax | (ghcb.save.rdx << 32)
     }
 
-    pub fn read_io_port(port: u16, access_size: u8) -> u64 {
+    pub fn read_io_port(port: u16, access_size: u8) -> u32 {
         let ghcb = Self::ghcb_mut();
         ghcb.ghcb_usage = GhcbUsage::BASE.0;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
-
-        todo!("fill out ghcb for io port read");
+        let io_exit_info = SevIoAccessInfo::new()
+            .with_port(port)
+            .with_read_access(true);
+        let io_exit_info = match access_size {
+            1 => io_exit_info.with_access_size8(true),
+            2 => io_exit_info.with_access_size16(true),
+            4 => io_exit_info.with_access_size32(true),
+            _ => panic!("Invalid access size"),
+        };
+        ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
+        ghcb.save.sw_exit_info2 = 0;
+        ghcb.save.valid_bitmap[0] = 0;
+        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
         Self::vmgs_exit();
 
         ghcb.ghcb_usage = GhcbUsage::INVALID.0;
         assert!(ghcb.save.sw_exit_info1 == 0);
+
+        ghcb.save.rax as u32
     }
 
     pub fn write_io_port(port: u16, access_size: u8, data: u32) {
         let ghcb = Self::ghcb_mut();
         ghcb.ghcb_usage = GhcbUsage::BASE.0;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
+        let io_exit_info = SevIoAccessInfo::new()
+            .with_port(port)
+            .with_read_access(false);
+        let io_exit_info = match access_size {
+            1 => io_exit_info.with_access_size8(true),
+            2 => io_exit_info.with_access_size16(true),
+            4 => io_exit_info.with_access_size32(true),
+            _ => panic!("Invalid access size"),
+        };
+        ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
+        ghcb.save.sw_exit_info2 = 0;
+        ghcb.save.rax = data as u64;
+        ghcb.save.valid_bitmap[0] = 1u64 << offset_of!(GhcbSaveArea, rax) / 8;
+        ghcb.save.valid_bitmap[1] = 0;
 
-        todo!("fill out ghcb for io port write");
         Self::vmgs_exit();
 
         ghcb.ghcb_usage = GhcbUsage::INVALID.0;

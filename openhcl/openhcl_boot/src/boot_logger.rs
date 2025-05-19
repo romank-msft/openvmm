@@ -43,6 +43,8 @@ impl Logger {
             Logger::Serial(serial) => serial.write_str(s),
             #[cfg(target_arch = "x86_64")]
             Logger::TdxSerial(serial) => serial.write_str(s),
+            #[cfg(target_arch = "x86_64")]
+            Logger::SnpSerial(serial) => serial.write_str(s),
             Logger::None => Ok(()),
         }
     }
