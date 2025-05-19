@@ -85,8 +85,9 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
     let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
     let mut free_pml4index = None;
     for (pml4index, e) in pml4table.iter_mut().enumerate() {
-        if *e & !X64_PTE_PRESENT == 0 {
+        if *e & X64_PTE_PRESENT == 0 {
             free_pml4index = Some(pml4index);
+            break;
         }
     }
     let pml4index = free_pml4index.expect("No free PML4 entry");
