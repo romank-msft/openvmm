@@ -351,7 +351,7 @@ where
             ghcb_page_base / HV_PAGE_SIZE,
             1,
             "underhill-shim-snp-ghcb",
-            BootPageAcceptance::Shared,
+            BootPageAcceptance::ExclusiveUnmeasured,
             &[],
         )?;
         ghcb_pfn = Some(ghcb_page_base / HV_PAGE_SIZE);

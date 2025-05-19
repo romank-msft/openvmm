@@ -10,12 +10,15 @@ use super::address_space::X64_PTE_ACCESSED;
 use super::address_space::X64_PTE_BITS;
 use super::address_space::X64_PTE_PRESENT;
 use super::address_space::X64_PTE_READ_WRITE;
+use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
+use crate::log;
 use core::arch::asm;
 use core::mem::offset_of;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
+use core::sync::atomic::fence;
 use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvRegisterName;
@@ -26,6 +29,7 @@ use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
+use x86defs::X64_PAGE_SIZE;
 use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
@@ -69,28 +73,72 @@ struct GhcbCall {
 
 #[must_use]
 fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
-    let mut page_root: u64;
-    unsafe {
-        asm!("mov {0}, cr3", out(reg) page_root, options(nostack));
-    }
+    const PML4_INDEX: usize = 0x1d0; // upper half mapping
+    const PDP_INDEX: usize = 0;
+    const PD_INDEX: usize = 0;
+    const PT_INDEX: usize = 0;
+    const GHCB_ADDR: usize = (((PML4_INDEX << (3 * X64_PTE_BITS))
+        | (PDP_INDEX << (2 * X64_PTE_BITS))
+        | (PD_INDEX << X64_PTE_BITS)
+        | PT_INDEX)
+        << X64_PAGE_SHIFT)
+        | if PML4_INDEX > 255 {
+            // Make it upper-half canonical.
+            0xFFFF_0000_0000_0000
+        } else {
+            0
+        };
+    let get_cr3 = || {
+        let mut cr3: u64;
 
-    page_root &= !(HV_PAGE_SIZE - 1);
-
+        // SAFETY: No access to the memory.
+        unsafe {
+            asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
+        }
+        cr3
+    };
+    let flush_tlb = || {
+        fence(Ordering::SeqCst);
+        // NOTE: no flush for the global pages.
+        // SAFETY: No concurrency issues.
+        unsafe {
+            asm!("mov cr3, {0}", in(reg) get_cr3(), options(nostack));
+        }
+        compiler_fence(Ordering::SeqCst);
+    };
     // TODO: maybe use the volatile accessor here?
     // SAFETY: The next page address must be set, identical mapping.
     let page_table = |pfn| unsafe {
         core::slice::from_raw_parts_mut((pfn << HV_PAGE_SHIFT) as *mut u64, PAGE_TABLE_ENTRY_COUNT)
     };
-
-    let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
-    let mut free_pml4index = None;
-    for (pml4index, e) in pml4table.iter_mut().enumerate() {
-        if *e & X64_PTE_PRESENT == 0 {
-            free_pml4index = Some(pml4index);
-            break;
+    let pte_for_pfn = |pfn: u64, confidential: bool| {
+        let common =
+            X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT);
+        if confidential {
+            common | X64_PTE_CONFIDENTIAL
+        } else {
+            common
         }
-    }
-    let pml4index = free_pml4index.expect("No free PML4 entry");
+    };
+    let cache_lines_flush_page = |addr: u64| {
+        const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
+        let start = addr & !(X64_PAGE_SIZE - 1);
+        let end = start + X64_PAGE_SIZE;
+
+        // Make sure there are no pending writes on the cache lines.
+        fence(Ordering::SeqCst);
+
+        for addr in (start..end).step_by(FLUSH_SIZE as usize) {
+            // SAFETY: No concurrency issues.
+            unsafe {
+                asm!("clflush [{0}]", in(reg) addr, options(nostack));
+            }
+        }
+    };
+
+    let page_root = get_cr3() & !(HV_PAGE_SIZE - 1);
+    let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
+    assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
 
     let (pdp_table_pfn, pd_table_pfn, page_table_pfn) =
         (page_number - 1, page_number - 2, page_number - 3);
@@ -98,74 +146,49 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
     let pd_table = page_table(pd_table_pfn);
     let page_table = page_table(page_table_pfn);
 
-    let pte_for_pfn = |pfn: u64| {
-    // Map without the C-bit set.
-        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT)
-    };
+    pml4table[PML4_INDEX] = pte_for_pfn(pdp_table_pfn, true);
+    pdp_table[PDP_INDEX] = pte_for_pfn(pd_table_pfn, true);
+    pd_table[PD_INDEX] = pte_for_pfn(page_table_pfn, true);
+    page_table[PT_INDEX] = pte_for_pfn(page_number, true);
 
-    pml4table[pml4index] = pte_for_pfn(pdp_table_pfn);
-    pdp_table[0] = pte_for_pfn(pd_table_pfn);
-    pd_table[0] = pte_for_pfn(page_table_pfn);
-    page_table[0] = pte_for_pfn(page_number);
+    flush_tlb();
+    // Evict the page from the cache before changing the encrypted state.
+    cache_lines_flush_page(GHCB_ADDR as u64);
 
-    compiler_fence(Ordering::SeqCst);
+    let ghcb_ptr = GHCB_ADDR as *mut GhcbPage;
 
-    // Flush the TLB.
-    // SAFETY: No concurrency issues.
-    unsafe {
-        asm!("mov cr3, {0}", in(reg) page_root, options(nostack));
-    }
-    compiler_fence(Ordering::SeqCst);
+    // Unaccept the page, invalidates page state.
+    pvalidate(page_number, ghcb_ptr as u64, false, false).expect("can unaccept memory");
+    // Issue VMGS exit to request the hypervisor to update the page state to host visible in RMP.
+    let resp = Ghcb::ghcb_call(GhcbCall {
+        info: GhcbInfo::PAGE_STATE_CHANGE,
+        extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED,
+        page_number,
+    });
+    assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
 
-    let ghcb_addr = ((pml4index as u64) << (3 * X64_PTE_BITS + X64_PAGE_SHIFT))
-        | if pml4index > 255 {
-            // Make it upper-halp canonical.
-            0xFFFF_0000_0000_0000
-        } else {
-            0
-        };
-
-    pvalidate(page_number, ghcb_addr as u64, false, true).expect("pvalidate succeeds for GHCB");
+    // Map the page as non-confidential by updating the PTE.
+    page_table[PT_INDEX] = pte_for_pfn(page_number, false);
+    flush_tlb();
+    // Evict the page from the cache before changing the encrypted state.
+    cache_lines_flush_page(GHCB_ADDR as u64);
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
     unsafe {
-        (ghcb_addr as *mut GhcbPage)
+        ghcb_ptr
             .as_mut()
             .expect("GHCB page is set")
             .as_mut_bytes()
             .fill(0);
     }
 
-    ghcb_addr as *mut GhcbPage
+    ghcb_ptr
 }
 
 /// Unmap the GHCB page.
 fn unmap_ghcb_page(ghcb_ptr: *mut GhcbPage) {
-    let mut page_root: u64;
-    unsafe {
-        asm!("mov {0}, cr3", out(reg) page_root, options(nostack));
-    }
-
-    let ghcb_addr = ghcb_ptr as u64;
-    let pml4index = (ghcb_addr >> (3 * X64_PTE_BITS + X64_PAGE_SHIFT)) as usize;
-    page_root &= !(HV_PAGE_SIZE - 1);
-
-    // TODO: maybe use the volatile accessor here?
-    // SAFETY: The next page address must be set, identical mapping.
-    let pml4table =
-        unsafe { core::slice::from_raw_parts_mut(page_root as *mut u64, PAGE_TABLE_ENTRY_COUNT) };
-
-    // TODO: pvalidate
-
-    pml4table[pml4index] = 0;
-    compiler_fence(Ordering::SeqCst);
-
-    // Flush the TLB.
-    // SAFETY: No concurrency issues.
-    unsafe {
-        asm!("mov cr3, {0}", in(reg) page_root, options(nostack));
-    }
+    // TODO: unmap the page.
 }
 
 impl Ghcb {
@@ -190,11 +213,6 @@ impl Ghcb {
                 && resp.pfn() == page_number,
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
-
-        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
-        Self::set_msr(HvX64RegisterName::GuestOsId.0, guest_os_id.into());
-
         GHCB_PAGE.store(ghcb_ptr, Ordering::Release);
     }
 
@@ -205,16 +223,6 @@ impl Ghcb {
         // TODO: clear the globals
     }
 
-    fn ghcb() -> &'static GhcbPage {
-        // SAFETY: The GHCB page is statically allocated and initialized.
-        unsafe {
-            GHCB_PAGE
-                .load(Ordering::Acquire)
-                .as_ref()
-                .expect("GHCB page is set")
-        }
-    }
-
     fn ghcb_mut() -> &'static mut GhcbPage {
         // SAFETY: The GHCB page is statically allocated and initialized.
         unsafe {
@@ -223,12 +231,6 @@ impl Ghcb {
                 .as_mut()
                 .expect("GHCB page is set")
         }
-    }
-
-    fn ghcb_address() -> u64 {
-        let addr = GHCB_PAGE.load(Ordering::Acquire) as u64;
-        assert!(addr != 0, "GHCB page is not set");
-        addr
     }
 
     #[inline(always)]
@@ -286,49 +288,6 @@ impl Ghcb {
         }
     }
 
-    pub fn set_msr(msr_index: u32, value: u64) {
-        let ghcb = Self::ghcb_mut();
-        ghcb.ghcb_usage = GhcbUsage::BASE.0;
-        ghcb.save.rcx = msr_index as u64;
-        ghcb.save.rax = value as u32 as u64;
-        ghcb.save.rdx = (value >> 32) as u32 as u64;
-        ghcb.save.sw_exit_code = SevExitCode::MSR.0;
-        ghcb.save.sw_exit_info1 = 1;
-        ghcb.save.sw_exit_info2 = 0;
-        ghcb.save.valid_bitmap[0] = 1u64 << offset_of!(GhcbSaveArea, rax) / 8;
-        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, rdx) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
-
-        Self::vmgs_exit();
-
-        ghcb.ghcb_usage = GhcbUsage::INVALID.0;
-        assert!(ghcb.save.sw_exit_info1 == 0);
-    }
-
-    pub fn get_msr(msr_index: u32) -> u64 {
-        let ghcb = Self::ghcb_mut();
-        ghcb.ghcb_usage = GhcbUsage::BASE.0;
-        ghcb.save.rcx = msr_index as u64;
-        ghcb.save.sw_exit_code = SevExitCode::MSR.0;
-        ghcb.save.sw_exit_info1 = 0;
-        ghcb.save.sw_exit_info2 = 0;
-        ghcb.save.valid_bitmap[0] = 0;
-        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
-
-        Self::vmgs_exit();
-
-        ghcb.ghcb_usage = GhcbUsage::INVALID.0;
-        assert!(ghcb.save.sw_exit_info1 == 0);
-
-        ghcb.save.rax | (ghcb.save.rdx << 32)
-    }
-
     pub fn read_io_port(port: u16, access_size: u8) -> u32 {
         let ghcb = Self::ghcb_mut();
         ghcb.ghcb_usage = GhcbUsage::BASE.0;
@@ -379,78 +338,6 @@ impl Ghcb {
 
         ghcb.ghcb_usage = GhcbUsage::INVALID.0;
         assert!(ghcb.save.sw_exit_info1 == 0);
-    }
-
-    fn get_register(&self, name: HvX64RegisterName) -> Result<HvRegisterValue, hvdef::HvError> {
-        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
-
-        let header = hvdef::hypercall::GetSetVpRegisters {
-            partition_id: hvdef::HV_PARTITION_ID_SELF,
-            vp_index: hvdef::HV_VP_INDEX_SELF,
-            target_vtl: HvInputVtl::CURRENT_VTL,
-            rsvd: [0; 3],
-        };
-
-        let ghcb_page = Self::ghcb_mut().as_mut_bytes();
-
-        // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header.write_to_prefix(ghcb_page).unwrap();
-        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
-        name.write_to_prefix(&mut ghcb_page[HEADER_SIZE..]).unwrap();
-
-        let control = hvdef::hypercall::Control::new()
-            .with_code(hvdef::HypercallCode::HvCallGetVpRegisters.0)
-            .with_rep_count(1)
-            .with_fast(false);
-
-        let resp = Self::ghcb_call(GhcbCall {
-            info: GhcbInfo::SPECIAL_HYPERCALL,
-            extra_data: control.into_bits(),
-            page_number: Self::ghcb_address(),
-        });
-
-        assert!(resp.info().0 == GhcbInfo::HYPERCALL_OUTPUT.0);
-        HypercallOutput::from_bits(((resp.into_bits() >> 16) & 0xFFF) as u64).result()?;
-
-        Ok(HvRegisterValue::read_from_prefix(&ghcb_page).unwrap().0)
-    }
-
-    fn set_register(name: HvRegisterName, value: HvRegisterValue) -> Result<(), hvdef::HvError> {
-        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
-
-        let header = hvdef::hypercall::GetSetVpRegisters {
-            partition_id: hvdef::HV_PARTITION_ID_SELF,
-            vp_index: hvdef::HV_VP_INDEX_SELF,
-            target_vtl: HvInputVtl::CURRENT_VTL,
-            rsvd: [0; 3],
-        };
-        let reg = hvdef::hypercall::HvRegisterAssoc {
-            name,
-            pad: Default::default(),
-            value,
-        };
-
-        let ghcb_page = Self::ghcb_mut().as_mut_bytes();
-
-        // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header.write_to_prefix(ghcb_page).unwrap();
-        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
-        reg.write_to_prefix(&mut ghcb_page[HEADER_SIZE..]).unwrap();
-
-        let control = hvdef::hypercall::Control::new()
-            .with_code(hvdef::HypercallCode::HvCallGetVpRegisters.0)
-            .with_rep_count(1)
-            .with_fast(false);
-
-        let resp = Self::ghcb_call(GhcbCall {
-            info: GhcbInfo::SPECIAL_HYPERCALL,
-            extra_data: control.into_bits(),
-            page_number: Self::ghcb_address(),
-        });
-
-        assert!(resp.info() == GhcbInfo::HYPERCALL_OUTPUT);
-
-        HypercallOutput::from_bits(((resp.into_bits() >> 16) & 0xFFF) as u64).result()
     }
 }
 
