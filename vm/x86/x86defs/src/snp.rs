@@ -4,6 +4,7 @@
 //! AMD SEV-SNP specific definitions.
 
 use crate::ApicRegister;
+use crate::X64_PAGE_SIZE;
 use bitfield_struct::bitfield;
 use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
@@ -672,6 +673,61 @@ open_enum::open_enum! {
         INVALID = !0,
     }
 }
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbSaveArea {
+    pub reserved_0x0: [u8; 203],
+    pub cpl: u8,
+    pub reserved_0xcc: [u8; 116],
+    pub xss: u64,
+    pub reserved_0x148: [u8; 24],
+    pub dr7: u64,
+    pub reserved_0x168: [u8; 16],
+    pub rip: u64,
+    pub reserved_0x180: [u8; 88],
+    pub rsp: u64,
+    pub reserved_0x1e0: [u8; 24],
+    pub rax: u64,
+    pub reserved_0x200: [u8; 264],
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rbx: u64,
+    pub reserved_0x320: [u8; 8],
+    pub rbp: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub reserved_0x380: [u8; 16],
+    pub sw_exit_code: u64,
+    pub sw_exit_info1: u64,
+    pub sw_exit_info2: u64,
+    pub sw_scratch: u64,
+    pub reserved_0x3b0: [u8; 56],
+    pub xcr0: u64,
+    pub valid_bitmap: [u64; 2],
+    pub x87_state_gpa: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbPage {
+    pub save: GhcbSaveArea,
+    pub reserved_save: [u8; 2048 - size_of::<GhcbSaveArea>()],
+    pub shared_buffer: [u8; 2032],
+    pub reserved_0xff0: [u8; 10],
+    pub protocol_version: u16,
+    pub ghcb_usage: u32,
+}
+
+const _: () = assert!(size_of::<GhcbPage>() == X64_PAGE_SIZE as usize);
 
 /// Struct representing GHCB hypercall parameters. These are located at the GHCB
 /// page starting at [`GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET`].
