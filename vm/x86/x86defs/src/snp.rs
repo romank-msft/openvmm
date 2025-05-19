@@ -674,7 +674,7 @@ open_enum::open_enum! {
     }
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
 pub struct GhcbSaveArea {
     pub reserved_0x0: [u8; 203],

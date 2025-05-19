@@ -29,7 +29,7 @@ pub const X64_PTE_READ_WRITE: u64 = 1 << 1;
 pub const X64_PTE_ACCESSED: u64 = 1 << 5;
 const X64_PTE_DIRTY: u64 = 1 << 6;
 const X64_PTE_LARGE_PAGE: u64 = 1 << 7;
-const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
+pub const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
 
 pub const PAGE_TABLE_ENTRY_COUNT: usize = 512;
 
