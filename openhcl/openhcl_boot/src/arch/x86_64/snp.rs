@@ -74,7 +74,7 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
         asm!("mov {0}, cr3", out(reg) page_root, options(nostack));
     }
 
-    page_root &= !(HV_PAGE_SIZE);
+    page_root &= !(HV_PAGE_SIZE - 1);
 
     // TODO: maybe use the volatile accessor here?
     // SAFETY: The next page address must be set, identical mapping.
