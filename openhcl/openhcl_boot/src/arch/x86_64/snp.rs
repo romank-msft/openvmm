@@ -98,15 +98,16 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
     let pd_table = page_table(pd_table_pfn);
     let page_table = page_table(page_table_pfn);
 
+    let pte_for_pfn = |pfn: u64| {
     // Map without the C-bit set.
-    pml4table[pml4index] =
-        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pdp_table_pfn << X64_PTE_BITS);
-    pdp_table[0] =
-        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pd_table_pfn << X64_PTE_BITS);
-    pd_table[0] =
-        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (page_table_pfn << X64_PTE_BITS);
-    page_table[0] =
-        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (page_number << X64_PTE_BITS);
+        X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT)
+    };
+
+    pml4table[pml4index] = pte_for_pfn(pdp_table_pfn);
+    pdp_table[0] = pte_for_pfn(pd_table_pfn);
+    pd_table[0] = pte_for_pfn(page_table_pfn);
+    page_table[0] = pte_for_pfn(page_number);
+
     compiler_fence(Ordering::SeqCst);
 
     // Flush the TLB.
