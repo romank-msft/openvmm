@@ -325,9 +325,9 @@ impl Ghcb {
     }
 
     pub fn uninitialize() {
+        unmap_ghcb_page();
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.load(Ordering::Acquire)) };
-        unmap_ghcb_page();
     }
 
     fn ghcb_mut() -> &'static mut GhcbPage {
