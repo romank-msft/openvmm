@@ -14,6 +14,7 @@ mod vp;
 mod vsm;
 
 use crate::host_params::shim_params::IsolationType;
+use crate::host_params::shim_params::ShimParams;
 pub use memory::setup_vtl2_memory;
 pub use memory::verify_imported_regions_hash;
 use safe_intrinsics::cpuid;
@@ -36,6 +37,22 @@ pub fn physical_address_bits(isolation: IsolationType) -> u8 {
         (result.eax & 0xFF) as u8
     } else {
         DEFAULT_PHYSICAL_ADDRESS_SIZE
+    }
+}
+
+pub fn initialize(p: &ShimParams) {
+    if p.isolation_type == IsolationType::Snp {
+        if let Some(page_number) = p.ghcb_pfn {
+            snp::Ghcb::initialize(page_number);
+        }
+    }
+}
+
+pub fn uninitialize(p: &ShimParams) {
+    if p.isolation_type == IsolationType::Snp {
+        if let Some(page_number) = p.ghcb_pfn {
+            snp::Ghcb::uninitialize(page_number);
+        }
     }
 }
 

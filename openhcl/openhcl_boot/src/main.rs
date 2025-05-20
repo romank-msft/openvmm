@@ -587,6 +587,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         enable_enlightened_panic();
     }
 
+    arch::initialize(&p);
+
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
     // hypercall code path where that is done automatically.
@@ -602,13 +604,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    if p.isolation_type == IsolationType::Snp {
-        if let Some(page_number) = p.ghcb_pfn {
-            arch::snp::Ghcb::initialize(page_number);
-        }
     }
 
     // Enable early log output if requested in the static command line.
@@ -802,15 +797,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     rt::verify_stack_cookie();
 
-    log!("uninitializing hypercalls, about to jump to kernel");
+    log!("uninitializing hypercalls");
     hvcall().uninitialize();
-
-    #[cfg(target_arch = "x86_64")]
-    if p.isolation_type == IsolationType::Snp {
-        if p.ghcb_pfn.is_some() {
-            arch::snp::Ghcb::uninitialize();
-        }
-    }
+    log!("uninitializing arch, about to jump to the kernel");
+    arch::uninitialize(&p);
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
