@@ -745,7 +745,7 @@ pub struct GhcbSaveArea {
     pub x87_state_gpa: u64,
 }
 
-#[repr(C, packed)]
+#[repr(C, align(4096))]
 #[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
 pub struct GhcbPage {
     pub save: GhcbSaveArea,

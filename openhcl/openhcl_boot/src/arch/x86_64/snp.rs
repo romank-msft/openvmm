@@ -20,8 +20,6 @@ use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::sync::atomic::fence;
-use hvdef::HV_PAGE_SHIFT;
-use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -107,24 +105,41 @@ impl VirtAddr4Level {
     }
 }
 
+/// Page table.
+#[repr(C, align(4096))]
+struct PageTable {
+    entries: [u64; PAGE_TABLE_ENTRY_COUNT],
+}
+
 // Would be great to allocate this pages dynamically as otherwise they go
 // into the IGVM file and require measurement through the PSP.
 
 /// PDP table to map the GHCB
-static PDP_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
-    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+static PDP_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+    SingleThreaded(UnsafeCell::new(PageTable {
+        entries: [0; PAGE_TABLE_ENTRY_COUNT],
+    }));
 
 /// PD table to map the GHCB
-static PD_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
-    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+static PD_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+    SingleThreaded(UnsafeCell::new(PageTable {
+        entries: [0; PAGE_TABLE_ENTRY_COUNT],
+    }));
 
 /// Page table to map the GHCB
-static PAGE_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
-    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+static PAGE_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
+    SingleThreaded(UnsafeCell::new(PageTable {
+        entries: [0; PAGE_TABLE_ENTRY_COUNT],
+    }));
 
-/// Page table to map the GHCB
+/// The GHCB page itself.
 static GHCB: SingleThreaded<UnsafeCell<[u8; size_of::<GhcbPage>()]>> =
     SingleThreaded(UnsafeCell::new([0; size_of::<GhcbPage>()]));
+
+fn ghcb_page_number() -> u64 {
+    // Identical mapping, the page number is the same as the address.
+    GHCB.get() as u64 >> X64_PAGE_SHIFT
+}
 
 const PML4_INDEX: usize = 0x1d0; // upper half mapping
 const PDP_INDEX: usize = 0;
@@ -176,7 +191,7 @@ fn flush_tlb() {
 fn page_table(pfn: u64) -> &'static mut [u64] {
     // SAFETY: The next page address must be set, identical mapping.
     unsafe {
-        core::slice::from_raw_parts_mut((pfn << HV_PAGE_SHIFT) as *mut u64, PAGE_TABLE_ENTRY_COUNT)
+        core::slice::from_raw_parts_mut((pfn << X64_PAGE_SHIFT) as *mut u64, PAGE_TABLE_ENTRY_COUNT)
     }
 }
 
@@ -190,15 +205,15 @@ fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
 }
 
 fn map_ghcb_page() {
-    let page_root = get_cr3() & !(HV_PAGE_SIZE - 1);
-    let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
+    let page_root = get_cr3() & !(X64_PAGE_SIZE - 1);
+    let pml4table = page_table(page_root >> X64_PAGE_SHIFT);
     assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
 
     // Running in identical mapping.
     let pdp_table_pfn = (PDP_TABLE.get() as u64) >> X64_PAGE_SHIFT;
     let pd_table_pfn = (PD_TABLE.get() as u64) >> X64_PAGE_SHIFT;
     let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-    let page_number = (GHCB.get() as u64) >> X64_PAGE_SHIFT;
+    let page_number = ghcb_page_number();
 
     let pdp_table = page_table(pdp_table_pfn);
     let pd_table = page_table(pd_table_pfn);
@@ -258,7 +273,7 @@ fn unmap_ghcb_page() {
     // Running in identical mapping.
     let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
     let page_table = page_table(page_table_pfn);
-    let page_number = (GHCB.get() as u64) >> X64_PAGE_SHIFT;
+    let page_number = ghcb_page_number();
 
     page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
     flush_tlb();
@@ -286,23 +301,31 @@ fn unmap_ghcb_page() {
     }
 }
 
+#[allow(dead_code)]
+enum IoAccessSize {
+    Byte = 1,
+    Word = 2,
+    Dword = 4,
+}
+
 impl Ghcb {
     pub fn initialize() {
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
         GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
 
         map_ghcb_page();
-        let page_number = GHCB.get() as u64;
+        Self::ghcb_mut().protocol_version = GhcbProtocolVersion::V2;
+
         let resp = Self::ghcb_call(GhcbCall {
             extra_data: 0,
-            page_number,
+            page_number: ghcb_page_number(),
             info: GhcbInfo::REGISTER_REQUEST,
         });
 
         assert!(
             resp.info() == GhcbInfo::REGISTER_RESPONSE
                 && resp.extra_data() == 0
-                && resp.pfn() == page_number,
+                && resp.pfn() == ghcb_page_number(),
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
     }
@@ -379,7 +402,7 @@ impl Ghcb {
     }
 
     #[must_use]
-    pub fn read_io_port(port: u16, access_size: u8) -> Option<u32> {
+    fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
         let ghcb = Self::ghcb_mut();
         ghcb.ghcb_usage = GhcbUsage::BASE;
         ghcb.protocol_version = GhcbProtocolVersion::V2;
@@ -388,10 +411,9 @@ impl Ghcb {
             .with_port(port)
             .with_read_access(true);
         let io_exit_info = match access_size {
-            1 => io_exit_info.with_access_size8(true),
-            2 => io_exit_info.with_access_size16(true),
-            4 => io_exit_info.with_access_size32(true),
-            _ => panic!("Invalid access size"),
+            IoAccessSize::Byte => io_exit_info.with_access_size8(true),
+            IoAccessSize::Word => io_exit_info.with_access_size16(true),
+            IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
         ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
         ghcb.save.sw_exit_info2 = 0;
@@ -403,7 +425,7 @@ impl Ghcb {
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: GHCB.get() as u64,
+            page_number: ghcb_page_number(),
         });
 
         ghcb.ghcb_usage = GhcbUsage::INVALID;
@@ -416,7 +438,7 @@ impl Ghcb {
     }
 
     #[must_use]
-    pub fn write_io_port(port: u16, access_size: u8, data: u32) -> bool {
+    fn write_io_port(port: u16, access_size: IoAccessSize, data: u32) -> bool {
         let ghcb = Self::ghcb_mut();
         ghcb.ghcb_usage = GhcbUsage::BASE;
         ghcb.protocol_version = GhcbProtocolVersion::V2;
@@ -425,10 +447,9 @@ impl Ghcb {
             .with_port(port)
             .with_read_access(false);
         let io_exit_info = match access_size {
-            1 => io_exit_info.with_access_size8(true),
-            2 => io_exit_info.with_access_size16(true),
-            4 => io_exit_info.with_access_size32(true),
-            _ => panic!("Invalid access size"),
+            IoAccessSize::Byte => io_exit_info.with_access_size8(true),
+            IoAccessSize::Word => io_exit_info.with_access_size16(true),
+            IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
         ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
         ghcb.save.sw_exit_info2 = 0;
@@ -441,7 +462,7 @@ impl Ghcb {
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: GHCB.get() as u64,
+            page_number: ghcb_page_number(),
         });
 
         ghcb.ghcb_usage = GhcbUsage::INVALID;
@@ -459,7 +480,7 @@ fn pvalidate(
     if large_page {
         assert!(va % x86defs::X64_LARGE_PAGE_SIZE == 0);
     } else {
-        assert!(va % HV_PAGE_SIZE == 0)
+        assert!(va % X64_PAGE_SIZE == 0)
     }
 
     let validate_page = validate as u32;
@@ -505,7 +526,7 @@ pub fn set_page_acceptance(
     range: MemoryRange,
     validate: bool,
 ) -> Result<(), AcceptGpaError> {
-    let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / HV_PAGE_SIZE;
+    let pages_per_large_page = x86defs::X64_LARGE_PAGE_SIZE / X64_PAGE_SIZE;
     let mut page_count = range.page_count_4k();
     let mut page_base = range.start_4k_gpn();
 
@@ -552,11 +573,11 @@ pub struct SnpIoAccess;
 impl minimal_rt::arch::IoAccess for SnpIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
         // Best effort
-        Ghcb::read_io_port(port, 1).unwrap_or(!0) as u8
+        Ghcb::read_io_port(port, IoAccessSize::Byte).unwrap_or(!0) as u8
     }
 
     unsafe fn outb(&self, port: u16, data: u8) {
         // Best effort
-        let _ = Ghcb::write_io_port(port, 1, data as u32);
+        let _ = Ghcb::write_io_port(port, IoAccessSize::Byte, data as u32);
     }
 }
