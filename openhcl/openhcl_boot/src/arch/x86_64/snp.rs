@@ -341,7 +341,7 @@ impl Ghcb {
     }
 
     #[inline(always)]
-    fn vmgs_exit() {
+    fn vmg_exit() {
         // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
         // directly change program state.
         unsafe {
@@ -365,7 +365,7 @@ impl Ghcb {
             // SAFETY: Writing and reding known good value to/from the GHCB MSR, following the GHCB protocol.
             unsafe {
                 write_msr(X86X_AMD_MSR_GHCB, ghcb_control.into_bits());
-                Self::vmgs_exit();
+                Self::vmg_exit();
                 read_msr(X86X_AMD_MSR_GHCB)
             },
         )
