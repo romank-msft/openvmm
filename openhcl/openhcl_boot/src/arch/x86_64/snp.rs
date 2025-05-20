@@ -10,8 +10,10 @@ use super::address_space::X64_PTE_ACCESSED;
 use super::address_space::X64_PTE_PRESENT;
 use super::address_space::X64_PTE_READ_WRITE;
 use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
+use crate::single_threaded::SingleThreaded;
 use bitfield_struct::bitfield;
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use core::mem::offset_of;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU64;
@@ -105,6 +107,25 @@ impl VirtAddr4Level {
     }
 }
 
+// Would be great to allocate this pages dynamically as otherwise they go
+// into the IGVM file and require measurement through the PSP.
+
+/// PDP table to map the GHCB
+static PDP_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
+    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+
+/// PD table to map the GHCB
+static PD_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
+    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+
+/// Page table to map the GHCB
+static PAGE_TABLE: SingleThreaded<UnsafeCell<[u64; PAGE_TABLE_ENTRY_COUNT]>> =
+    SingleThreaded(UnsafeCell::new([0; PAGE_TABLE_ENTRY_COUNT]));
+
+/// Page table to map the GHCB
+static GHCB: SingleThreaded<UnsafeCell<[u8; size_of::<GhcbPage>()]>> =
+    SingleThreaded(UnsafeCell::new([0; size_of::<GhcbPage>()]));
+
 const PML4_INDEX: usize = 0x1d0; // upper half mapping
 const PDP_INDEX: usize = 0;
 const PD_INDEX: usize = 0;
@@ -168,13 +189,17 @@ fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
     }
 }
 
-fn map_ghcb_page(page_number: u64) {
+fn map_ghcb_page() {
     let page_root = get_cr3() & !(HV_PAGE_SIZE - 1);
     let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
     assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
 
-    let (pdp_table_pfn, pd_table_pfn, page_table_pfn) =
-        (page_number - 1, page_number - 2, page_number - 3);
+    // Running in identical mapping.
+    let pdp_table_pfn = (PDP_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+    let pd_table_pfn = (PD_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+    let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+    let page_number = (GHCB.get() as u64) >> X64_PAGE_SHIFT;
+
     let pdp_table = page_table(pdp_table_pfn);
     let pd_table = page_table(pd_table_pfn);
     let page_table = page_table(page_table_pfn);
@@ -208,6 +233,7 @@ fn map_ghcb_page(page_number: u64) {
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
+    // SAFETY: the apge is statically-allocated, single-threaded access.
     unsafe {
         ghcb_ptr
             .as_mut()
@@ -220,7 +246,7 @@ fn map_ghcb_page(page_number: u64) {
 }
 
 /// Unmap the GHCB page.
-fn unmap_ghcb_page(page_number: u64) {
+fn unmap_ghcb_page() {
     GHCB_PAGE.store(core::ptr::null_mut(), Ordering::Release);
 
     let ghcb_ptr: *mut GhcbPage = GHCB_ADDR.as_mut_ptr();
@@ -229,9 +255,13 @@ fn unmap_ghcb_page(page_number: u64) {
     cache_lines_flush_page(GHCB_ADDR.into_bits());
 
     // Update the page table entry to make it confidential.
-    let page_table_pfn = page_number - 3;
+    // Running in identical mapping.
+    let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
     let page_table = page_table(page_table_pfn);
-    page_table[PT_INDEX] = pte_for_pfn(page_number, true);
+    let page_number = (GHCB.get() as u64) >> X64_PAGE_SHIFT;
+
+    page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
+    flush_tlb();
 
     // Issue VMGS exit to request the hypervisor to update the page state to private in RMP.
     let resp = Ghcb::ghcb_call(GhcbCall {
@@ -241,24 +271,28 @@ fn unmap_ghcb_page(page_number: u64) {
     });
     assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
 
-    // Use the identical mapping as there the page is mapped as confidential.
-    let ghcb_ptr: *mut GhcbPage = (page_number << HV_PAGE_SHIFT) as *mut GhcbPage;
-
     // Accept the page, invalidates page state.
     pvalidate(page_number, ghcb_ptr as u64, false, true).expect("memory accept");
 
-    flush_tlb();
+    // Flipping the C-bit makes the contents of the GHCB page scrambled,
+    // zero it out.
+    // SAFETY: the apge is statically-allocated, single-threaded access.
+    unsafe {
+        ghcb_ptr
+            .as_mut()
+            .expect("GHCB page is set")
+            .as_mut_bytes()
+            .fill(0);
+    }
 }
 
 impl Ghcb {
-    pub fn initialize(page_number: u64) {
-        assert!(page_number != u64::MAX && page_number != 0);
-
+    pub fn initialize() {
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
         GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
 
-        map_ghcb_page(page_number);
-
+        map_ghcb_page();
+        let page_number = GHCB.get() as u64;
         let resp = Self::ghcb_call(GhcbCall {
             extra_data: 0,
             page_number,
@@ -273,10 +307,10 @@ impl Ghcb {
         );
     }
 
-    pub fn uninitialize(page_number: u64) {
+    pub fn uninitialize() {
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.load(Ordering::Acquire)) };
-        unmap_ghcb_page(page_number);
+        unmap_ghcb_page();
     }
 
     fn ghcb_mut() -> &'static mut GhcbPage {
@@ -366,11 +400,10 @@ impl Ghcb {
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
 
-        let ghcb_msr = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: ghcb_msr.pfn(),
+            page_number: GHCB.get() as u64,
         });
 
         ghcb.ghcb_usage = GhcbUsage::INVALID;
@@ -405,11 +438,10 @@ impl Ghcb {
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
 
-        let ghcb_msr = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: ghcb_msr.pfn(),
+            page_number: GHCB.get() as u64,
         });
 
         ghcb.ghcb_usage = GhcbUsage::INVALID;
