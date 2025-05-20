@@ -7,11 +7,10 @@ use super::address_space::LocalMap;
 use super::address_space::PAGE_TABLE_ENTRY_COUNT;
 use super::address_space::X64_PAGE_SHIFT;
 use super::address_space::X64_PTE_ACCESSED;
-use super::address_space::X64_PTE_BITS;
 use super::address_space::X64_PTE_PRESENT;
 use super::address_space::X64_PTE_READ_WRITE;
 use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
-use crate::log;
+use bitfield_struct::bitfield;
 use core::arch::asm;
 use core::mem::offset_of;
 use core::sync::atomic::AtomicPtr;
@@ -21,11 +20,6 @@ use core::sync::atomic::compiler_fence;
 use core::sync::atomic::fence;
 use hvdef::HV_PAGE_SHIFT;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::HvRegisterName;
-use hvdef::HvRegisterValue;
-use hvdef::HvX64RegisterName;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -34,11 +28,11 @@ use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
 use x86defs::snp::GhcbPage;
+use x86defs::snp::GhcbProtocolVersion;
 use x86defs::snp::GhcbSaveArea;
 use x86defs::snp::GhcbUsage;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
-use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 static GHCB_PAGE: AtomicPtr<GhcbPage> = AtomicPtr::new(core::ptr::null_mut() as *mut GhcbPage);
@@ -71,71 +65,110 @@ struct GhcbCall {
     info: GhcbInfo,
 }
 
-#[must_use]
-fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
-    const PML4_INDEX: usize = 0x1d0; // upper half mapping
-    const PDP_INDEX: usize = 0;
-    const PD_INDEX: usize = 0;
-    const PT_INDEX: usize = 0;
-    const GHCB_ADDR: usize = (((PML4_INDEX << (3 * X64_PTE_BITS))
-        | (PDP_INDEX << (2 * X64_PTE_BITS))
-        | (PD_INDEX << X64_PTE_BITS)
-        | PT_INDEX)
-        << X64_PAGE_SHIFT)
-        | if PML4_INDEX > 255 {
-            // Make it upper-half canonical.
-            0xFFFF_0000_0000_0000
-        } else {
-            0
-        };
-    let get_cr3 = || {
-        let mut cr3: u64;
+// The memory mapping bits likely don't belong to this module, but
+// no centralized facility seems to exist for them yet.
 
-        // SAFETY: No access to the memory.
-        unsafe {
-            asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
-        }
-        cr3
-    };
-    let flush_tlb = || {
-        fence(Ordering::SeqCst);
-        // NOTE: no flush for the global pages.
+/// 4-level virtual address. The number of bits used in the VA
+/// ought to be requested through CPUID. Here it is "hardcoded"
+/// to 48 bits, which is the most common case.
+#[bitfield(u64)]
+struct VirtAddr4Level {
+    /// Offset inside the page.
+    #[bits(12)]
+    offset: usize,
+    /// PT index.
+    #[bits(9)]
+    pt_index: usize,
+    /// PD index.
+    #[bits(9)]
+    pd_index: usize,
+    /// PDP index.
+    #[bits(9)]
+    pdp_index: usize,
+    /// PML4 index.
+    #[bits(9)]
+    pml4_index: usize,
+    /// Reserved bits.
+    #[bits(16)]
+    reserved: usize,
+}
+
+impl VirtAddr4Level {
+    const fn canonicalize(&self) -> VirtAddr4Level {
+        // If PML4 is greater than 255, make it upper-half canonical
+        // by sign extending the PML4 index.
+        Self::from_bits((self.into_bits().wrapping_shl(16) as i64).wrapping_shr(16) as u64)
+    }
+
+    const fn as_mut_ptr<T>(&self) -> *mut T {
+        self.canonicalize().into_bits() as *mut T
+    }
+}
+
+const PML4_INDEX: usize = 0x1d0; // upper half mapping
+const PDP_INDEX: usize = 0;
+const PD_INDEX: usize = 0;
+const PT_INDEX: usize = 0;
+const GHCB_ADDR: VirtAddr4Level = VirtAddr4Level::new()
+    .with_pt_index(PT_INDEX)
+    .with_pd_index(PD_INDEX)
+    .with_pdp_index(PDP_INDEX)
+    .with_pml4_index(PML4_INDEX)
+    .canonicalize();
+
+fn get_cr3() -> u64 {
+    let mut cr3: u64;
+
+    // SAFETY: No access to the memory.
+    unsafe {
+        asm!("mov {0}, cr3", out(reg) cr3, options(nostack));
+    }
+    cr3
+}
+
+fn cache_lines_flush_page(addr: u64) {
+    const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
+    let start = addr & !(X64_PAGE_SIZE - 1);
+    let end = start + X64_PAGE_SIZE;
+
+    // Make sure there are no pending writes on the cache lines.
+    fence(Ordering::SeqCst);
+
+    for addr in (start..end).step_by(FLUSH_SIZE as usize) {
         // SAFETY: No concurrency issues.
         unsafe {
-            asm!("mov cr3, {0}", in(reg) get_cr3(), options(nostack));
+            asm!("clflush [{0}]", in(reg) addr, options(nostack));
         }
-        compiler_fence(Ordering::SeqCst);
-    };
-    // TODO: maybe use the volatile accessor here?
+    }
+}
+
+fn flush_tlb() {
+    fence(Ordering::SeqCst);
+    // NOTE: no flush for the global pages.
+    // SAFETY: No concurrency issues.
+    unsafe {
+        asm!("mov cr3, {0}", in(reg) get_cr3(), options(nostack));
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+fn page_table(pfn: u64) -> &'static mut [u64] {
     // SAFETY: The next page address must be set, identical mapping.
-    let page_table = |pfn| unsafe {
+    unsafe {
         core::slice::from_raw_parts_mut((pfn << HV_PAGE_SHIFT) as *mut u64, PAGE_TABLE_ENTRY_COUNT)
-    };
-    let pte_for_pfn = |pfn: u64, confidential: bool| {
-        let common =
-            X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT);
-        if confidential {
-            common | X64_PTE_CONFIDENTIAL
-        } else {
-            common
-        }
-    };
-    let cache_lines_flush_page = |addr: u64| {
-        const FLUSH_SIZE: u64 = 64; // NOTE: hardcoded cache line size.
-        let start = addr & !(X64_PAGE_SIZE - 1);
-        let end = start + X64_PAGE_SIZE;
+    }
+}
 
-        // Make sure there are no pending writes on the cache lines.
-        fence(Ordering::SeqCst);
+fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
+    let common = X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | (pfn << X64_PAGE_SHIFT);
+    if confidential {
+        common | X64_PTE_CONFIDENTIAL
+    } else {
+        common
+    }
+}
 
-        for addr in (start..end).step_by(FLUSH_SIZE as usize) {
-            // SAFETY: No concurrency issues.
-            unsafe {
-                asm!("clflush [{0}]", in(reg) addr, options(nostack));
-            }
-        }
-    };
-
+fn map_ghcb_page(page_number: u64) {
     let page_root = get_cr3() & !(HV_PAGE_SIZE - 1);
     let pml4table = page_table(page_root >> HV_PAGE_SHIFT);
     assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
@@ -153,12 +186,12 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
 
     flush_tlb();
     // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_ADDR as u64);
+    cache_lines_flush_page(GHCB_ADDR.into_bits());
 
-    let ghcb_ptr = GHCB_ADDR as *mut GhcbPage;
+    let ghcb_ptr: *mut GhcbPage = GHCB_ADDR.as_mut_ptr();
 
     // Unaccept the page, invalidates page state.
-    pvalidate(page_number, ghcb_ptr as u64, false, false).expect("can unaccept memory");
+    pvalidate(page_number, ghcb_ptr as u64, false, false).expect("memory unaccept");
     // Issue VMGS exit to request the hypervisor to update the page state to host visible in RMP.
     let resp = Ghcb::ghcb_call(GhcbCall {
         info: GhcbInfo::PAGE_STATE_CHANGE,
@@ -171,7 +204,7 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
     page_table[PT_INDEX] = pte_for_pfn(page_number, false);
     flush_tlb();
     // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_ADDR as u64);
+    cache_lines_flush_page(GHCB_ADDR.into_bits());
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
@@ -183,12 +216,38 @@ fn map_ghcb_page(page_number: u64) -> *mut GhcbPage {
             .fill(0);
     }
 
-    ghcb_ptr
+    GHCB_PAGE.store(ghcb_ptr, Ordering::Release);
 }
 
 /// Unmap the GHCB page.
-fn unmap_ghcb_page(ghcb_ptr: *mut GhcbPage) {
-    // TODO: unmap the page.
+fn unmap_ghcb_page(page_number: u64) {
+    GHCB_PAGE.store(core::ptr::null_mut(), Ordering::Release);
+
+    let ghcb_ptr: *mut GhcbPage = GHCB_ADDR.as_mut_ptr();
+
+    // Evict the page from the cache before changing the encrypted state.
+    cache_lines_flush_page(GHCB_ADDR.into_bits());
+
+    // Update the page table entry to make it confidential.
+    let page_table_pfn = page_number - 3;
+    let page_table = page_table(page_table_pfn);
+    page_table[PT_INDEX] = pte_for_pfn(page_number, true);
+
+    // Issue VMGS exit to request the hypervisor to update the page state to private in RMP.
+    let resp = Ghcb::ghcb_call(GhcbCall {
+        info: GhcbInfo::PAGE_STATE_CHANGE,
+        extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE,
+        page_number,
+    });
+    assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
+
+    // Use the identical mapping as there the page is mapped as confidential.
+    let ghcb_ptr: *mut GhcbPage = (page_number << HV_PAGE_SHIFT) as *mut GhcbPage;
+
+    // Accept the page, invalidates page state.
+    pvalidate(page_number, ghcb_ptr as u64, false, true).expect("memory accept");
+
+    flush_tlb();
 }
 
 impl Ghcb {
@@ -198,8 +257,7 @@ impl Ghcb {
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
         GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
 
-        let ghcb_ptr = map_ghcb_page(page_number);
-        assert!(!ghcb_ptr.is_null(), "GHCB page is not mapped");
+        map_ghcb_page(page_number);
 
         let resp = Self::ghcb_call(GhcbCall {
             extra_data: 0,
@@ -213,14 +271,12 @@ impl Ghcb {
                 && resp.pfn() == page_number,
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
-        GHCB_PAGE.store(ghcb_ptr, Ordering::Release);
     }
 
-    pub fn uninitialize() {
+    pub fn uninitialize(page_number: u64) {
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.load(Ordering::Acquire)) };
-        unmap_ghcb_page(GHCB_PAGE.load(Ordering::Acquire));
-        // TODO: clear the globals
+        unmap_ghcb_page(page_number);
     }
 
     fn ghcb_mut() -> &'static mut GhcbPage {
@@ -288,9 +344,11 @@ impl Ghcb {
         }
     }
 
-    pub fn read_io_port(port: u16, access_size: u8) -> u32 {
+    #[must_use]
+    pub fn read_io_port(port: u16, access_size: u8) -> Option<u32> {
         let ghcb = Self::ghcb_mut();
-        ghcb.ghcb_usage = GhcbUsage::BASE.0;
+        ghcb.ghcb_usage = GhcbUsage::BASE;
+        ghcb.protocol_version = GhcbProtocolVersion::V2;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
@@ -307,17 +365,28 @@ impl Ghcb {
         ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
             | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
-        Self::vmgs_exit();
 
-        ghcb.ghcb_usage = GhcbUsage::INVALID.0;
-        assert!(ghcb.save.sw_exit_info1 == 0);
+        let ghcb_msr = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
+        Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::NORMAL,
+            extra_data: 0,
+            page_number: ghcb_msr.pfn(),
+        });
 
-        ghcb.save.rax as u32
+        ghcb.ghcb_usage = GhcbUsage::INVALID;
+
+        if ghcb.save.sw_exit_info1 != 0 {
+            None
+        } else {
+            Some(ghcb.save.rax as u32)
+        }
     }
 
-    pub fn write_io_port(port: u16, access_size: u8, data: u32) {
+    #[must_use]
+    pub fn write_io_port(port: u16, access_size: u8, data: u32) -> bool {
         let ghcb = Self::ghcb_mut();
-        ghcb.ghcb_usage = GhcbUsage::BASE.0;
+        ghcb.ghcb_usage = GhcbUsage::BASE;
+        ghcb.protocol_version = GhcbProtocolVersion::V2;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
@@ -332,12 +401,19 @@ impl Ghcb {
         ghcb.save.sw_exit_info2 = 0;
         ghcb.save.rax = data as u64;
         ghcb.save.valid_bitmap[0] = 1u64 << offset_of!(GhcbSaveArea, rax) / 8;
-        ghcb.save.valid_bitmap[1] = 0;
+        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
 
-        Self::vmgs_exit();
+        let ghcb_msr = GhcbMsr::from_bits(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
+        Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::NORMAL,
+            extra_data: 0,
+            page_number: ghcb_msr.pfn(),
+        });
 
-        ghcb.ghcb_usage = GhcbUsage::INVALID.0;
-        assert!(ghcb.save.sw_exit_info1 == 0);
+        ghcb.ghcb_usage = GhcbUsage::INVALID;
+        ghcb.save.sw_exit_info1 == 0
     }
 }
 
@@ -443,10 +519,12 @@ pub struct SnpIoAccess;
 
 impl minimal_rt::arch::IoAccess for SnpIoAccess {
     unsafe fn inb(&self, port: u16) -> u8 {
-        Ghcb::read_io_port(port, 1) as u8
+        // Best effort
+        Ghcb::read_io_port(port, 1).unwrap_or(!0) as u8
     }
 
     unsafe fn outb(&self, port: u16, data: u8) {
-        Ghcb::write_io_port(port, 1, data as u32);
+        // Best effort
+        let _ = Ghcb::write_io_port(port, 1, data as u32);
     }
 }

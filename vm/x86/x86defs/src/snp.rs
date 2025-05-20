@@ -666,11 +666,40 @@ pub const GHCB_DATA_PAGE_STATE_MASK: u64 = 0x00F;
 pub const GHCB_DATA_PAGE_STATE_LARGE_PAGE: u64 = 0x010;
 
 open_enum::open_enum! {
+    #[derive(FromBytes, IntoBytes)]
     pub enum GhcbUsage: u32 {
         BASE = 0,
         HYPERCALL = 1,
         VTL_RETURN = 2,
         INVALID = !0,
+    }
+}
+
+impl GhcbUsage {
+    pub const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+open_enum::open_enum! {
+    #[derive(FromBytes, IntoBytes)]
+    pub enum GhcbProtocolVersion: u16 {
+        V1 = 1,
+        V2 = 2,
+    }
+}
+
+impl GhcbProtocolVersion {
+    pub const fn into_bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
     }
 }
 
@@ -723,8 +752,8 @@ pub struct GhcbPage {
     pub reserved_save: [u8; 2048 - size_of::<GhcbSaveArea>()],
     pub shared_buffer: [u8; 2032],
     pub reserved_0xff0: [u8; 10],
-    pub protocol_version: u16,
-    pub ghcb_usage: u32,
+    pub protocol_version: GhcbProtocolVersion,
+    pub ghcb_usage: GhcbUsage,
 }
 
 const _: () = assert!(size_of::<GhcbPage>() == X64_PAGE_SIZE as usize);

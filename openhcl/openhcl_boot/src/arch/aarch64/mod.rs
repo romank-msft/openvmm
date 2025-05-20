@@ -16,6 +16,10 @@ pub use memory::verify_imported_regions_hash;
 pub use vp::setup_vtl2_vp;
 pub use vsm::get_isolation_type;
 
+pub fn initialize_arch(_: &ShimParams) {}
+
+pub fn uninitialize_arch(_: &ShimParams) {}
+
 // Entry point.
 #[cfg(minimal_rt)]
 core::arch::global_asm! {
