@@ -137,7 +137,7 @@ static GHCB: SingleThreaded<UnsafeCell<[u8; size_of::<GhcbPage>()]>> =
     SingleThreaded(UnsafeCell::new([0; size_of::<GhcbPage>()]));
 
 fn ghcb_page_number() -> u64 {
-    // Identical mapping, the page number is the same as the address.
+    // Identical mapping, the GVA is the same as the GPA.
     GHCB.get() as u64 >> X64_PAGE_SHIFT
 }
 
