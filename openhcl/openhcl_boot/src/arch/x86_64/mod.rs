@@ -42,17 +42,13 @@ pub fn physical_address_bits(isolation: IsolationType) -> u8 {
 
 pub fn initialize(p: &ShimParams) {
     if p.isolation_type == IsolationType::Snp {
-        if let Some(page_number) = p.ghcb_pfn {
-            snp::Ghcb::initialize(page_number);
-        }
+        snp::Ghcb::initialize();
     }
 }
 
 pub fn uninitialize(p: &ShimParams) {
     if p.isolation_type == IsolationType::Snp {
-        if let Some(page_number) = p.ghcb_pfn {
-            snp::Ghcb::uninitialize(page_number);
-        }
+        snp::Ghcb::uninitialize();
     }
 }
 
