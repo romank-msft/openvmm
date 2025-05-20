@@ -37,7 +37,7 @@ use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
 use zerocopy::IntoBytes;
 
-static GHCB_PAGE: AtomicPtr<GhcbPage> = AtomicPtr::new(core::ptr::null_mut() as *mut GhcbPage);
+static GHCB_PAGE: AtomicPtr<GhcbPage> = AtomicPtr::new(core::ptr::null_mut());
 static GHCB_PREVIOUS: AtomicU64 = AtomicU64::new(0);
 
 pub struct Ghcb;

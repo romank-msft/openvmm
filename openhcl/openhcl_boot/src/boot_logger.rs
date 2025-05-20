@@ -9,6 +9,8 @@
 //! sensitive.
 
 #[cfg(target_arch = "x86_64")]
+use crate::arch::snp::SnpIoAccess;
+#[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
@@ -116,6 +118,5 @@ macro_rules! debug_log {
 
 // Expect unused imports because there should be no normal usage in code due to
 // lints against it in CI.
-use crate::arch::snp::SnpIoAccess;
 #[expect(unused_imports)]
 pub(crate) use debug_log;
