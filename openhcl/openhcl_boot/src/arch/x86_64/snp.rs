@@ -15,7 +15,6 @@ use bitfield_struct::bitfield;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
-use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
@@ -35,7 +34,6 @@ use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
 use zerocopy::IntoBytes;
 
-static GHCB_PAGE: AtomicPtr<GhcbPage> = AtomicPtr::new(core::ptr::null_mut());
 static GHCB_PREVIOUS: AtomicU64 = AtomicU64::new(0);
 
 pub struct Ghcb;
@@ -145,7 +143,7 @@ const PML4_INDEX: usize = 0x1d0; // upper half mapping
 const PDP_INDEX: usize = 0;
 const PD_INDEX: usize = 0;
 const PT_INDEX: usize = 0;
-const GHCB_ADDR: VirtAddr4Level = VirtAddr4Level::new()
+const GHCB_GVA: VirtAddr4Level = VirtAddr4Level::new()
     .with_pt_index(PT_INDEX)
     .with_pd_index(PD_INDEX)
     .with_pdp_index(PDP_INDEX)
@@ -226,9 +224,9 @@ fn map_ghcb_page() {
 
     flush_tlb();
     // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_ADDR.into_bits());
+    cache_lines_flush_page(GHCB_GVA.into_bits());
 
-    let ghcb_ptr: *mut GhcbPage = GHCB_ADDR.as_mut_ptr();
+    let ghcb_ptr: *mut GhcbPage = GHCB_GVA.as_mut_ptr();
 
     // Unaccept the page, invalidates page state.
     pvalidate(page_number, ghcb_ptr as u64, false, false).expect("memory unaccept");
@@ -244,7 +242,7 @@ fn map_ghcb_page() {
     page_table[PT_INDEX] = pte_for_pfn(page_number, false);
     flush_tlb();
     // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_ADDR.into_bits());
+    cache_lines_flush_page(GHCB_GVA.into_bits());
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
@@ -256,18 +254,14 @@ fn map_ghcb_page() {
             .as_mut_bytes()
             .fill(0);
     }
-
-    GHCB_PAGE.store(ghcb_ptr, Ordering::Release);
 }
 
 /// Unmap the GHCB page.
 fn unmap_ghcb_page() {
-    GHCB_PAGE.store(core::ptr::null_mut(), Ordering::Release);
-
-    let ghcb_ptr: *mut GhcbPage = GHCB_ADDR.as_mut_ptr();
+    let ghcb_ptr: *mut GhcbPage = GHCB_GVA.as_mut_ptr();
 
     // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_ADDR.into_bits());
+    cache_lines_flush_page(GHCB_GVA.into_bits());
 
     // Update the page table entry to make it confidential.
     // Running in identical mapping.
@@ -339,8 +333,8 @@ impl Ghcb {
     fn ghcb_mut() -> &'static mut GhcbPage {
         // SAFETY: The GHCB page is statically allocated and initialized.
         unsafe {
-            GHCB_PAGE
-                .load(Ordering::Acquire)
+            GHCB_GVA
+                .as_mut_ptr::<GhcbPage>()
                 .as_mut()
                 .expect("GHCB page is set")
         }
