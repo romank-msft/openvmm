@@ -263,8 +263,13 @@ impl Ghcb {
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
-        Ghcb::ghcb_mut().as_mut_bytes().fill(0);
-        Self::ghcb_mut().protocol_version = GhcbProtocolVersion::V2;
+        // SAFETY: The GHCB page is statically allocated and initialized,
+        // and the GHCB page is not accessed concurrently: this code runs
+        // on the boot CPU, there is no task switching or interrupts.
+        unsafe {
+            Self::ghcb_mut().as_mut_bytes().fill(0);
+            Self::ghcb_mut().protocol_version = GhcbProtocolVersion::V2;
+        }
 
         // Register the GHCB page with the hypervisor.
 
@@ -315,13 +320,23 @@ impl Ghcb {
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
-        Ghcb::ghcb_mut().as_mut_bytes().fill(0);
+        // SAFETY: The GHCB page is statically allocated and initialized,
+        // and the GHCB page is not accessed concurrently: this code runs
+        // on the boot CPU, there is no task switching or interrupts.
+        unsafe {
+            Ghcb::ghcb_mut().as_mut_bytes().fill(0);
+        }
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
     }
 
-    fn ghcb_mut() -> &'static mut GhcbPage {
+    /// # Safety
+    ///
+    /// Returns a static mutable reference to the GHCB page. The caller must ensure that
+    /// the GHCB page is not accessed concurrently, and the reference is the only one
+    /// that is mutable.
+    unsafe fn ghcb_mut() -> &'static mut GhcbPage {
         // SAFETY: The GHCB page is statically allocated and initialized.
         unsafe {
             GHCB_GVA
@@ -388,7 +403,11 @@ impl Ghcb {
 
     #[must_use]
     fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
-        let ghcb = Self::ghcb_mut();
+        // SAFETY: The GHCB page is statically allocated and initialized,
+        // and the GHCB page is not accessed concurrently: this code runs
+        // on the boot CPU, there is no task switching or interrupts.
+        let ghcb = unsafe { Self::ghcb_mut() };
+
         ghcb.ghcb_usage = GhcbUsage::BASE;
         ghcb.protocol_version = GhcbProtocolVersion::V2;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
@@ -424,7 +443,11 @@ impl Ghcb {
 
     #[must_use]
     fn write_io_port(port: u16, access_size: IoAccessSize, data: u32) -> bool {
-        let ghcb = Self::ghcb_mut();
+        // SAFETY: The GHCB page is statically allocated and initialized,
+        // and the GHCB page is not accessed concurrently: this code runs
+        // on the boot CPU, there is no task switching or interrupts.
+        let ghcb = unsafe { Self::ghcb_mut() };
+
         ghcb.ghcb_usage = GhcbUsage::BASE;
         ghcb.protocol_version = GhcbProtocolVersion::V2;
         ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
