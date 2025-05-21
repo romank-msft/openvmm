@@ -226,10 +226,8 @@ fn map_ghcb_page() {
     // Evict the page from the cache before changing the encrypted state.
     cache_lines_flush_page(GHCB_GVA.into_bits());
 
-    let ghcb_ptr: *mut GhcbPage = GHCB_GVA.as_mut_ptr();
-
     // Unaccept the page, invalidates page state.
-    pvalidate(page_number, ghcb_ptr as u64, false, false).expect("memory unaccept");
+    pvalidate(page_number, GHCB_GVA.into_bits(), false, false).expect("memory unaccept");
     // Issue VMGS exit to request the hypervisor to update the page state to host visible in RMP.
     let resp = Ghcb::ghcb_call(GhcbCall {
         info: GhcbInfo::PAGE_STATE_CHANGE,
@@ -246,20 +244,11 @@ fn map_ghcb_page() {
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
-    // SAFETY: the apge is statically-allocated, single-threaded access.
-    unsafe {
-        ghcb_ptr
-            .as_mut()
-            .expect("GHCB page is set")
-            .as_mut_bytes()
-            .fill(0);
-    }
+    Ghcb::ghcb_mut().as_mut_bytes().fill(0);
 }
 
 /// Unmap the GHCB page.
 fn unmap_ghcb_page() {
-    let ghcb_ptr: *mut GhcbPage = GHCB_GVA.as_mut_ptr();
-
     // Evict the page from the cache before changing the encrypted state.
     cache_lines_flush_page(GHCB_GVA.into_bits());
 
@@ -281,18 +270,11 @@ fn unmap_ghcb_page() {
     assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
 
     // Accept the page, invalidates page state.
-    pvalidate(page_number, ghcb_ptr as u64, false, true).expect("memory accept");
+    pvalidate(page_number, GHCB_GVA.into_bits(), false, true).expect("memory accept");
 
     // Flipping the C-bit makes the contents of the GHCB page scrambled,
     // zero it out.
-    // SAFETY: the apge is statically-allocated, single-threaded access.
-    unsafe {
-        ghcb_ptr
-            .as_mut()
-            .expect("GHCB page is set")
-            .as_mut_bytes()
-            .fill(0);
-    }
+    Ghcb::ghcb_mut().as_mut_bytes().fill(0);
 }
 
 #[allow(dead_code)]
