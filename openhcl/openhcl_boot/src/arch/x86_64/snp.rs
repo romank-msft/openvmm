@@ -279,7 +279,7 @@ impl Ghcb {
             info: GhcbInfo::REGISTER_REQUEST,
         });
         assert!(
-            resp.info() == GhcbInfo::REGISTER_RESPONSE
+            resp.info() == GhcbInfo::REGISTER_RESPONSE.0
                 && resp.extra_data() == 0
                 && resp.pfn() == ghcb_page_number(),
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
@@ -364,7 +364,7 @@ impl Ghcb {
         } = call_data;
         let ghcb_control = GhcbMsr::new()
             .with_pfn(page_number)
-            .with_info(info)
+            .with_info(info.0)
             .with_extra_data(extra_data);
 
         GhcbMsr::from_bits(
