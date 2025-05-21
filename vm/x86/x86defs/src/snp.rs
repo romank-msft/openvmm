@@ -648,16 +648,6 @@ open_enum::open_enum! {
     }
 }
 
-impl GhcbInfo {
-    const fn into_bits(self) -> u64 {
-        self.0
-    }
-
-    const fn from_bits(bits: u64) -> Self {
-        Self(bits)
-    }
-}
-
 pub const GHCB_DATA_PAGE_STATE_PRIVATE: u64 = 0x001;
 pub const GHCB_DATA_PAGE_STATE_SHARED: u64 = 0x002;
 pub const GHCB_DATA_PAGE_STATE_PSMASH: u64 = 0x003;
@@ -961,7 +951,7 @@ open_enum::open_enum! {
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct GhcbMsr {
     #[bits(12)]
-    pub info: GhcbInfo,
+    pub info: u64,
     #[bits(40)]
     pub pfn: u64,
     #[bits(12)]
