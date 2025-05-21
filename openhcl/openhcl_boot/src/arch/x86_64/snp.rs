@@ -9,10 +9,8 @@ use super::address_space::X64_PAGE_SHIFT;
 use super::address_space::X64_PTE_ACCESSED;
 use super::address_space::X64_PTE_PRESENT;
 use super::address_space::X64_PTE_READ_WRITE;
-use crate::PageAlign;
 use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
 use crate::single_threaded::SingleThreaded;
-use crate::zeroed;
 use bitfield_struct::bitfield;
 use core::arch::asm;
 use core::cell::Cell;
@@ -28,13 +26,11 @@ use x86defs::X64_PAGE_SIZE;
 use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
-use x86defs::snp::GhcbPage;
 use x86defs::snp::GhcbProtocolVersion;
 use x86defs::snp::GhcbSaveArea;
 use x86defs::snp::GhcbUsage;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
-use zerocopy::IntoBytes;
 
 static GHCB_PREVIOUS: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
@@ -99,10 +95,6 @@ impl VirtAddr4Level {
         // by sign extending the PML4 index.
         Self::from_bits((self.into_bits().wrapping_shl(16) as i64).wrapping_shr(16) as u64)
     }
-
-    const fn as_mut_ptr<T>(&self) -> *mut T {
-        self.canonicalize().into_bits() as *mut T
-    }
 }
 
 /// Page table.
@@ -131,16 +123,6 @@ static PAGE_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
     SingleThreaded(UnsafeCell::new(PageTable {
         entries: [0; PAGE_TABLE_ENTRY_COUNT],
     }));
-
-/// The GHCB page itself.
-static GHCB: SingleThreaded<UnsafeCell<PageAlign<[u8; size_of::<GhcbPage>()]>>> =
-    SingleThreaded(UnsafeCell::new(zeroed()));
-
-fn ghcb_page_number() -> u64 {
-    // Identical mapping, the GVA is the same as the GPA.
-    let gva = GHCB.get() as u64;
-    gva >> X64_PAGE_SHIFT
-}
 
 const PML4_INDEX: usize = 0x1d0; // upper half mapping
 const PDP_INDEX: usize = 0;
@@ -205,6 +187,132 @@ fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
     }
 }
 
+/// GHCB page access. The GHCB page is statically allocated and
+/// initialized. The GHCB page might be accessed and modified
+/// concurrently by the (malicious) host, and the atomic accesses
+/// mitigate the possibility of torn reads/writes.
+mod ghcb_access {
+    use super::GHCB_GVA;
+    use crate::PageAlign;
+    use crate::arch::x86_64::address_space::X64_PAGE_SHIFT;
+    use crate::zeroed;
+    use core::mem::offset_of;
+    use core::sync::atomic::AtomicU16;
+    use core::sync::atomic::AtomicU32;
+    use core::sync::atomic::AtomicU64;
+    use core::sync::atomic::Ordering;
+    use x86defs::snp::GhcbPage;
+    use x86defs::snp::GhcbProtocolVersion;
+    use x86defs::snp::GhcbSaveArea;
+    use x86defs::snp::GhcbUsage;
+
+    /// The GHCB page itself. Must not be *ever* accessed directly
+    /// using the static. It might be unaccepted at any time, and
+    /// the VA below is mapped with the C-bit set.
+    ///
+    /// The declaration is just a means to get the page statically
+    /// allocated and aligned.
+    static GHCB: PageAlign<[u8; size_of::<GhcbPage>()]> = zeroed();
+
+    pub fn page_number() -> u64 {
+        // Identical mapping, the GVA is the same as the GPA.
+        let gva = GHCB.0.as_ptr() as u64;
+        gva >> X64_PAGE_SHIFT
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that the GHCB page is properly mapped
+    /// and can be accessed in a memory-safe manner.
+    unsafe fn ghcb_data<T>() -> &'static mut [T] {
+        // SAFETY: The GHCB page is statically allocated and initialized.
+        // It is either mapped by the time of access, or the code won't
+        // be executed at all due to the hardware fault.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                GHCB_GVA.into_bits() as *mut T,
+                size_of::<GhcbPage>() / size_of::<T>(),
+            )
+        }
+    }
+
+    macro_rules! ghcb_field_set {
+        ($field:ident, $type:ty, $val:expr) => {{
+            // SAFETY: Atomic access to the GHCB page.
+            let ghcb_data = unsafe { ghcb_data::<$type>() };
+            let pos = offset_of!(GhcbPage, $field) / size_of::<$type>();
+            ghcb_data[pos].store($val, Ordering::SeqCst);
+        }};
+    }
+
+    macro_rules! ghcb_save_field_set {
+        ($field:ident, $type:ty, $val:expr) => {{
+            // SAFETY: Atomic access to the GHCB page.
+            let ghcb_data = unsafe { ghcb_data::<$type>() };
+            // Save area is at the beginning of the GHCB page.
+            let pos = offset_of!(GhcbSaveArea, $field) / size_of::<$type>();
+            ghcb_data[pos].store($val, Ordering::SeqCst);
+        }};
+    }
+
+    macro_rules! ghcb_save_field_get {
+        ($field:ident, $type:ty) => {{
+            // SAFETY: Atomic access to the GHCB page.
+            let ghcb_data = unsafe { ghcb_data::<$type>() };
+            // Save area is at the beginning of the GHCB page.
+            let pos = offset_of!(GhcbSaveArea, $field) / size_of::<$type>();
+            ghcb_data[pos].load(Ordering::SeqCst)
+        }};
+    }
+
+    pub fn clear_page() {
+        // SAFETY: Atomic access to the GHCB page.
+        unsafe { ghcb_data::<AtomicU64>() }
+            .iter()
+            .for_each(|x| x.store(0, Ordering::SeqCst));
+    }
+
+    pub fn set_usage(usage: GhcbUsage) {
+        ghcb_field_set!(ghcb_usage, AtomicU32, usage.into_bits());
+    }
+
+    pub fn set_protocol_version(version: GhcbProtocolVersion) {
+        ghcb_field_set!(protocol_version, AtomicU16, version.into_bits());
+    }
+
+    pub fn set_sw_exit_code(code: u64) {
+        ghcb_save_field_set!(sw_exit_code, AtomicU64, code);
+    }
+
+    pub fn set_sw_exit_info1(info: u64) {
+        ghcb_save_field_set!(sw_exit_info1, AtomicU64, info);
+    }
+
+    pub fn sw_exit_info1() -> u64 {
+        ghcb_save_field_get!(sw_exit_info1, AtomicU64)
+    }
+
+    pub fn set_sw_exit_info2(info: u64) {
+        ghcb_save_field_set!(sw_exit_info2, AtomicU64, info);
+    }
+
+    pub fn set_valid_bitmap0(bitmap: u64) {
+        ghcb_save_field_set!(valid_bitmap0, AtomicU64, bitmap);
+    }
+
+    pub fn set_valid_bitmap1(bitmap: u64) {
+        ghcb_save_field_set!(valid_bitmap1, AtomicU64, bitmap);
+    }
+
+    pub fn set_rax(rax: u64) {
+        ghcb_save_field_set!(rax, AtomicU64, rax);
+    }
+
+    pub fn rax() -> u64 {
+        ghcb_save_field_get!(rax, AtomicU64)
+    }
+}
+
 #[allow(dead_code)]
 enum IoAccessSize {
     Byte = 1,
@@ -215,7 +323,6 @@ enum IoAccessSize {
 impl Ghcb {
     pub fn initialize() {
         // Make sure page alignment.
-        assert!((GHCB.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
         assert!((PAGE_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
         assert!((PD_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
         assert!((PDP_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
@@ -230,7 +337,7 @@ impl Ghcb {
         let pdp_table_pfn = (PDP_TABLE.get() as u64) >> X64_PAGE_SHIFT;
         let pd_table_pfn = (PD_TABLE.get() as u64) >> X64_PAGE_SHIFT;
         let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-        let page_number = ghcb_page_number();
+        let page_number = ghcb_access::page_number();
 
         let pdp_table = page_table(pdp_table_pfn);
         let pd_table = page_table(pd_table_pfn);
@@ -263,25 +370,20 @@ impl Ghcb {
 
         // Flipping the C-bit makes the contents of the GHCB page scrambled,
         // zero it out.
-        // SAFETY: The GHCB page is statically allocated and initialized,
-        // and the GHCB page is not accessed concurrently: this code runs
-        // on the boot CPU, there is no task switching or interrupts.
-        unsafe {
-            Self::ghcb_mut().as_mut_bytes().fill(0);
-            Self::ghcb_mut().protocol_version = GhcbProtocolVersion::V2;
-        }
+        ghcb_access::clear_page();
+        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
 
         // Register the GHCB page with the hypervisor.
 
         let resp = Self::ghcb_call(GhcbCall {
             extra_data: 0,
-            page_number: ghcb_page_number(),
+            page_number: ghcb_access::page_number(),
             info: GhcbInfo::REGISTER_REQUEST,
         });
         assert!(
             resp.info() == GhcbInfo::REGISTER_RESPONSE.0
                 && resp.extra_data() == 0
-                && resp.pfn() == ghcb_page_number(),
+                && resp.pfn() == ghcb_access::page_number(),
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
 
@@ -300,7 +402,7 @@ impl Ghcb {
         // Running in identical mapping.
         let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
         let page_table = page_table(page_table_pfn);
-        let page_number = ghcb_page_number();
+        let page_number = ghcb_access::page_number();
 
         page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
 
@@ -318,32 +420,10 @@ impl Ghcb {
         // Needed here, not before.
         flush_tlb();
 
-        // Flipping the C-bit makes the contents of the GHCB page scrambled,
-        // zero it out.
-        // SAFETY: The GHCB page is statically allocated and initialized,
-        // and the GHCB page is not accessed concurrently: this code runs
-        // on the boot CPU, there is no task switching or interrupts.
-        unsafe {
-            Ghcb::ghcb_mut().as_mut_bytes().fill(0);
-        }
+        ghcb_access::clear_page();
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
-    }
-
-    /// # Safety
-    ///
-    /// Returns a static mutable reference to the GHCB page. The caller must ensure that
-    /// the GHCB page is not accessed concurrently, and the reference is the only one
-    /// that is mutable.
-    unsafe fn ghcb_mut() -> &'static mut GhcbPage {
-        // SAFETY: The GHCB page is statically allocated and initialized.
-        unsafe {
-            GHCB_GVA
-                .as_mut_ptr::<GhcbPage>()
-                .as_mut()
-                .expect("GHCB page is set")
-        }
     }
 
     #[inline(always)]
@@ -403,14 +483,10 @@ impl Ghcb {
 
     #[must_use]
     fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
-        // SAFETY: The GHCB page is statically allocated and initialized,
-        // and the GHCB page is not accessed concurrently: this code runs
-        // on the boot CPU, there is no task switching or interrupts.
-        let ghcb = unsafe { Self::ghcb_mut() };
+        ghcb_access::set_usage(GhcbUsage::BASE);
+        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
+        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
 
-        ghcb.ghcb_usage = GhcbUsage::BASE;
-        ghcb.protocol_version = GhcbProtocolVersion::V2;
-        ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
             .with_read_access(true);
@@ -419,38 +495,36 @@ impl Ghcb {
             IoAccessSize::Word => io_exit_info.with_access_size16(true),
             IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
-        ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
-        ghcb.save.sw_exit_info2 = 0;
-        ghcb.save.valid_bitmap[0] = 0;
-        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
+
+        ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
+        ghcb_access::set_sw_exit_info2(0);
+        ghcb_access::set_valid_bitmap0(0);
+        ghcb_access::set_valid_bitmap1(
+            (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
+        );
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: ghcb_page_number(),
+            page_number: ghcb_access::page_number(),
         });
+        ghcb_access::set_usage(GhcbUsage::INVALID);
 
-        ghcb.ghcb_usage = GhcbUsage::INVALID;
-
-        if ghcb.save.sw_exit_info1 != 0 {
+        if ghcb_access::sw_exit_info1() != 0 {
             None
         } else {
-            Some(ghcb.save.rax as u32)
+            Some(ghcb_access::rax() as u32)
         }
     }
 
     #[must_use]
     fn write_io_port(port: u16, access_size: IoAccessSize, data: u32) -> bool {
-        // SAFETY: The GHCB page is statically allocated and initialized,
-        // and the GHCB page is not accessed concurrently: this code runs
-        // on the boot CPU, there is no task switching or interrupts.
-        let ghcb = unsafe { Self::ghcb_mut() };
+        ghcb_access::set_usage(GhcbUsage::BASE);
+        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
+        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
 
-        ghcb.ghcb_usage = GhcbUsage::BASE;
-        ghcb.protocol_version = GhcbProtocolVersion::V2;
-        ghcb.save.sw_exit_code = SevExitCode::IOIO.0;
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
             .with_read_access(false);
@@ -459,22 +533,25 @@ impl Ghcb {
             IoAccessSize::Word => io_exit_info.with_access_size16(true),
             IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
-        ghcb.save.sw_exit_info1 = io_exit_info.into_bits().into();
-        ghcb.save.sw_exit_info2 = 0;
-        ghcb.save.rax = data as u64;
-        ghcb.save.valid_bitmap[0] = 1u64 << offset_of!(GhcbSaveArea, rax) / 8;
-        ghcb.save.valid_bitmap[1] = (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-            | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64));
+
+        ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
+        ghcb_access::set_sw_exit_info2(0);
+        ghcb_access::set_rax(data as u64);
+        ghcb_access::set_valid_bitmap0(1u64 << offset_of!(GhcbSaveArea, rax) / 8);
+        ghcb_access::set_valid_bitmap1(
+            (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
+        );
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
             extra_data: 0,
-            page_number: ghcb_page_number(),
+            page_number: ghcb_access::page_number(),
         });
+        ghcb_access::set_usage(GhcbUsage::INVALID);
 
-        ghcb.ghcb_usage = GhcbUsage::INVALID;
-        ghcb.save.sw_exit_info1 == 0
+        ghcb_access::sw_exit_info1() == 0
     }
 }
 
