@@ -228,7 +228,7 @@ fn map_ghcb_page() {
 
     // Unaccept the page, invalidates page state.
     pvalidate(page_number, GHCB_GVA.into_bits(), false, false).expect("memory unaccept");
-    // Issue VMGS exit to request the hypervisor to update the page state to host visible in RMP.
+    // Issue VMG exit to request the hypervisor to update the page state to host visible in RMP.
     let resp = Ghcb::ghcb_call(GhcbCall {
         info: GhcbInfo::PAGE_STATE_CHANGE,
         extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED,
@@ -261,7 +261,7 @@ fn unmap_ghcb_page() {
     page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
     flush_tlb();
 
-    // Issue VMGS exit to request the hypervisor to update the page state to private in RMP.
+    // Issue VMG exit to request the hypervisor to update the page state to private in RMP.
     let resp = Ghcb::ghcb_call(GhcbCall {
         info: GhcbInfo::PAGE_STATE_CHANGE,
         extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE,
