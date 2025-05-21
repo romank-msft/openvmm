@@ -134,9 +134,10 @@ mod details {
     }
 }
 
+pub use details::HvCall;
 pub use details::hvcall;
 
-impl details::HvCall {
+impl HvCall {
     /// Returns the address of the hypercall page, mapping it first if
     /// necessary.
     #[cfg(target_arch = "x86_64")]
