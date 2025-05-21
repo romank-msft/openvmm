@@ -311,6 +311,22 @@ mod ghcb_access {
     pub fn rax() -> u64 {
         ghcb_save_field_get!(rax, AtomicU64)
     }
+
+    pub fn set_rcx(rcx: u64) {
+        ghcb_save_field_set!(rcx, AtomicU64, rcx);
+    }
+
+    pub fn rcx() -> u64 {
+        ghcb_save_field_get!(rcx, AtomicU64)
+    }
+
+    pub fn set_rdx(rdx: u64) {
+        ghcb_save_field_set!(rdx, AtomicU64, rdx);
+    }
+
+    pub fn rdx() -> u64 {
+        ghcb_save_field_get!(rdx, AtomicU64)
+    }
 }
 
 #[allow(dead_code)]
@@ -385,6 +401,18 @@ impl Ghcb {
                 && resp.extra_data() == 0
                 && resp.pfn() == ghcb_access::page_number(),
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
+        );
+
+        // Register to issue Hyper-V hypercalls via GHCB.
+        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+        assert!(Self::set_msr(
+            hvdef::HV_X64_MSR_GUEST_OS_ID,
+            guest_os_id.into()
+        ));
+        // and make sure it is set as expected.
+        assert!(
+            Self::get_msr(hvdef::HV_X64_MSR_GUEST_OS_ID).expect("GHCB: Failed to set guest OS ID")
+                == guest_os_id.into()
         );
 
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
@@ -552,6 +580,67 @@ impl Ghcb {
         ghcb_access::set_usage(GhcbUsage::INVALID);
 
         ghcb_access::sw_exit_info1() == 0
+    }
+
+    #[must_use]
+    pub fn set_msr(msr_index: u32, value: u64) -> bool {
+        ghcb_access::set_usage(GhcbUsage::BASE);
+        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
+        ghcb_access::set_sw_exit_code(SevExitCode::MSR.0);
+
+        ghcb_access::set_rcx(msr_index as u64);
+        ghcb_access::set_rax(value as u32 as u64);
+        ghcb_access::set_rdx((value >> 32) as u32 as u64);
+        ghcb_access::set_sw_exit_info1(1);
+        ghcb_access::set_sw_exit_info2(0);
+        ghcb_access::set_valid_bitmap0(1u64 << offset_of!(GhcbSaveArea, rax) / 8);
+        ghcb_access::set_valid_bitmap1(
+            (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, rdx) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
+        );
+
+        Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::NORMAL,
+            extra_data: 0,
+            page_number: ghcb_access::page_number(),
+        });
+        ghcb_access::set_usage(GhcbUsage::INVALID);
+
+        ghcb_access::sw_exit_info1() == 0
+    }
+
+    #[must_use]
+    pub fn get_msr(msr_index: u32) -> Option<u64> {
+        ghcb_access::set_usage(GhcbUsage::BASE);
+        ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
+        ghcb_access::set_sw_exit_code(SevExitCode::MSR.0);
+
+        ghcb_access::set_rcx(msr_index as u64);
+        ghcb_access::set_sw_exit_info1(0);
+        ghcb_access::set_sw_exit_info2(0);
+        ghcb_access::set_valid_bitmap0(0);
+        ghcb_access::set_valid_bitmap1(
+            (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
+                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
+        );
+
+        Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::NORMAL,
+            extra_data: 0,
+            page_number: ghcb_access::page_number(),
+        });
+        ghcb_access::set_usage(GhcbUsage::INVALID);
+
+        if ghcb_access::sw_exit_info1() != 0 {
+            None
+        } else {
+            Some(ghcb_access::rax() | (ghcb_access::rdx() << 32))
+        }
     }
 }
 
