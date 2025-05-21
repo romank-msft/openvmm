@@ -15,9 +15,9 @@ use crate::single_threaded::SingleThreaded;
 use crate::zeroed;
 use bitfield_struct::bitfield;
 use core::arch::asm;
+use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
-use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::sync::atomic::fence;
@@ -36,7 +36,7 @@ use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
 use zerocopy::IntoBytes;
 
-static GHCB_PREVIOUS: AtomicU64 = AtomicU64::new(0);
+static GHCB_PREVIOUS: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
 pub struct Ghcb;
 
@@ -281,7 +281,7 @@ impl Ghcb {
         );
 
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
-        GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
+        GHCB_PREVIOUS.replace(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
     }
 
     pub fn uninitialize() {
@@ -318,7 +318,7 @@ impl Ghcb {
         Ghcb::ghcb_mut().as_mut_bytes().fill(0);
 
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
-        unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.load(Ordering::Acquire)) };
+        unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.get()) };
     }
 
     fn ghcb_mut() -> &'static mut GhcbPage {
