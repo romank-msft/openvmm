@@ -3,84 +3,140 @@
 
 //! Hypercall infrastructure.
 
-use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
-use core::cell::RefCell;
-use core::cell::UnsafeCell;
 use core::mem::size_of;
 use hvdef::HV_PAGE_SIZE;
-use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-/// Page-aligned, page-sized buffer for use with hypercalls
-#[repr(C, align(4096))]
-struct HvcallPage {
-    buffer: [u8; HV_PAGE_SIZE as usize],
-}
+mod details {
+    use crate::PageAlign;
+    use crate::single_threaded::SingleThreaded;
+    use crate::zeroed;
+    use core::cell::RefCell;
+    use core::cell::RefMut;
+    use core::cell::UnsafeCell;
+    use hvdef::HV_PAGE_SIZE;
+    use hvdef::Vtl;
 
-impl HvcallPage {
-    pub const fn new() -> Self {
-        HvcallPage {
-            buffer: [0; HV_PAGE_SIZE as usize],
+    /// Static, reusable page for hypercall input
+    static HVCALL_INPUT: SingleThreaded<UnsafeCell<PageAlign<[u8; HV_PAGE_SIZE as usize]>>> =
+        SingleThreaded(zeroed());
+
+    /// Static, reusable page for hypercall output
+    static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<PageAlign<[u8; HV_PAGE_SIZE as usize]>>> =
+        SingleThreaded(zeroed());
+
+    static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
+        initialized: false,
+        vtl: Vtl::Vtl0,
+    }));
+
+    /// Provides mechanisms to invoke hypercalls within the boot shim.
+    /// Internally uses static buffers for the hypercall page, the input
+    /// page, and the output page, so this should not be used in any
+    /// multi-threaded capacity (which the boot shim currently is not).
+    pub struct HvCall {
+        initialized: bool,
+        vtl: Vtl,
+    }
+
+    /// Returns an [`HvCall`] instance.
+    ///
+    /// Panics if another instance is already in use.
+    #[track_caller]
+    pub fn hvcall() -> RefMut<'static, HvCall> {
+        HVCALL.borrow_mut()
+    }
+
+    impl HvCall {
+        pub fn initialized(&self) -> bool {
+            self.initialized
+        }
+
+        pub fn initialize(&mut self) {
+            assert!(!self.initialized());
+            assert!(HVCALL_INPUT.get() as u64 & (HV_PAGE_SIZE - 1) == 0);
+            assert!(HVCALL_OUTPUT.get() as u64 & (HV_PAGE_SIZE - 1) == 0);
+
+            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+            crate::arch::hypercall::initialize(guest_os_id.into());
+
+            self.initialized = true;
+
+            self.vtl = self
+                .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+                .map_or(Vtl::Vtl0, |status| {
+                    hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                        .active_vtl()
+                        .try_into()
+                        .unwrap()
+                });
+        }
+
+        /// Call before jumping to kernel.
+        pub fn uninitialize(&mut self) {
+            if self.initialized {
+                crate::arch::hypercall::uninitialize();
+                self.initialized = false;
+            }
+        }
+
+        /// Returns the environment's VTL.
+        pub fn vtl(&self) -> Vtl {
+            assert!(self.initialized);
+            self.vtl
+        }
+
+        pub fn input_page(&self) -> &[u8] {
+            // SAFETY: The input page is a static buffer, and the signatures
+            // of the functions that use it are such that they cannot be
+            // called concurrently.
+            unsafe { HVCALL_INPUT.get().as_mut() }
+                .expect("input page")
+                .0
+                .as_slice()
+        }
+
+        pub fn output_page(&self) -> &[u8] {
+            // SAFETY: The output page is a static buffer, and the signatures
+            // of the functions that use it are such that they cannot be
+            // called concurrently.
+            unsafe { HVCALL_OUTPUT.get().as_mut() }
+                .expect("input page")
+                .0
+                .as_slice()
+        }
+
+        pub fn input_page_mut(&mut self) -> &mut [u8] {
+            // SAFETY: The input page is a static buffer, and the signatures
+            // of the functions that use it are such that they cannot be
+            // called concurrently.
+            unsafe { HVCALL_INPUT.get().as_mut() }
+                .expect("input page")
+                .0
+                .as_mut_slice()
+        }
+
+        pub fn output_page_mut(&mut self) -> &mut [u8] {
+            // SAFETY: The output page is a static buffer, and the signatures
+            // of the functions that use it are such that they cannot be
+            // called concurrently.
+            unsafe { HVCALL_OUTPUT.get().as_mut() }
+                .expect("input page")
+                .0
+                .as_mut_slice()
         }
     }
-
-    /// Address of the hypercall page.
-    fn address(&self) -> u64 {
-        let addr = self.buffer.as_ptr() as u64;
-
-        // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
-
-        addr
-    }
 }
 
-/// Static, reusable page for hypercall input
-static HVCALL_INPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
-    SingleThreaded(UnsafeCell::new(HvcallPage::new()));
+pub use details::hvcall;
 
-/// Static, reusable page for hypercall output
-static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
-    SingleThreaded(UnsafeCell::new(HvcallPage::new()));
-
-static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
-    initialized: false,
-    vtl: Vtl::Vtl0,
-}));
-
-/// Provides mechanisms to invoke hypercalls within the boot shim.
-/// Internally uses static buffers for the hypercall page, the input
-/// page, and the output page, so this should not be used in any
-/// multi-threaded capacity (which the boot shim currently is not).
-pub struct HvCall {
-    initialized: bool,
-    vtl: Vtl,
-}
-
-/// Returns an [`HvCall`] instance.
-///
-/// Panics if another instance is already in use.
-#[track_caller]
-pub fn hvcall() -> core::cell::RefMut<'static, HvCall> {
-    HVCALL.borrow_mut()
-}
-
-impl HvCall {
-    fn input_page() -> &'static mut HvcallPage {
-        // SAFETY: `HVCALL` owns the input page.
-        unsafe { &mut *HVCALL_INPUT.get() }
-    }
-
-    fn output_page() -> &'static mut HvcallPage {
-        // SAFETY: `HVCALL` owns the output page.
-        unsafe { &mut *HVCALL_OUTPUT.get() }
-    }
-
+impl details::HvCall {
     /// Returns the address of the hypercall page, mapping it first if
     /// necessary.
     #[cfg(target_arch = "x86_64")]
@@ -90,42 +146,9 @@ impl HvCall {
     }
 
     fn init_if_needed(&mut self) {
-        if !self.initialized {
+        if !self.initialized() {
             self.initialize();
         }
-    }
-
-    pub fn initialize(&mut self) {
-        assert!(!self.initialized);
-
-        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
-        crate::arch::hypercall::initialize(guest_os_id.into());
-
-        self.initialized = true;
-
-        self.vtl = self
-            .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
-            .map_or(Vtl::Vtl0, |status| {
-                hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
-                    .active_vtl()
-                    .try_into()
-                    .unwrap()
-            });
-    }
-
-    /// Call before jumping to kernel.
-    pub fn uninitialize(&mut self) {
-        if self.initialized {
-            crate::arch::hypercall::uninitialize();
-            self.initialized = false;
-        }
-    }
-
-    /// Returns the environment's VTL.
-    pub fn vtl(&self) -> Vtl {
-        assert!(self.initialized);
-        self.vtl
     }
 
     /// Makes a hypercall.
@@ -145,8 +168,8 @@ impl HvCall {
         unsafe {
             invoke_hypercall(
                 control,
-                Self::input_page().address(),
-                Self::output_page().address(),
+                self.input_page().as_ptr() as u64,
+                self.output_page_mut().as_ptr() as u64,
             )
         }
     }
@@ -167,9 +190,7 @@ impl HvCall {
         };
 
         // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header
-            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap();
+        header.write_to_prefix(self.input_page_mut()).unwrap();
 
         let reg = hvdef::hypercall::HvRegisterAssoc {
             name,
@@ -178,7 +199,7 @@ impl HvCall {
         };
 
         // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
-        reg.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
+        reg.write_to_prefix(&mut self.input_page_mut()[HEADER_SIZE..])
             .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallSetVpRegisters, Some(1));
@@ -201,16 +222,14 @@ impl HvCall {
         };
 
         // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header
-            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap();
+        header.write_to_prefix(&mut self.input_page_mut()).unwrap();
         // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
-        name.write_to_prefix(&mut Self::input_page().buffer[HEADER_SIZE..])
+        name.write_to_prefix(&mut self.input_page_mut()[HEADER_SIZE..])
             .unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallGetVpRegisters, Some(1));
         output.result()?;
-        let value = hvdef::HvRegisterValue::read_from_prefix(&Self::output_page().buffer)
+        let value = hvdef::HvRegisterValue::read_from_prefix(self.output_page())
             .unwrap()
             .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         Ok(value)
@@ -235,16 +254,14 @@ impl HvCall {
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header
-                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap();
+            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
                 let page_num = current_page + i as u64;
                 // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
                 page_num
-                    .write_to_prefix(&mut Self::input_page().buffer[input_offset..])
+                    .write_to_prefix(&mut self.input_page_mut()[input_offset..])
                     .unwrap();
                 input_offset += size_of::<u64>();
             }
@@ -276,9 +293,7 @@ impl HvCall {
         };
 
         // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header
-            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-            .unwrap();
+        header.write_to_prefix(&mut self.input_page_mut()).unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
         match output.result() {
@@ -316,9 +331,7 @@ impl HvCall {
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header
-                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap();
+            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
 
             let output =
                 self.dispatch_hvcall(hvdef::HypercallCode::HvCallAcceptGpaPages, Some(count));
@@ -353,15 +366,13 @@ impl HvCall {
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header
-                .write_to_prefix(Self::input_page().buffer.as_mut_slice())
-                .unwrap();
+            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
             // PANIC: Infallable, since the hypercall parameters are chunked to be less
             // than the remaining size (after the header) of the input page.
             // todo: This is *not true* for aarch64, where the hw_ids are u64s. Tracked via
             // https://github.com/microsoft/openvmm/issues/745
             hw_ids
-                .write_to_prefix(&mut Self::input_page().buffer[header.as_bytes().len()..])
+                .write_to_prefix(&mut self.input_page_mut()[header.as_bytes().len()..])
                 .unwrap();
 
             // SAFETY: The input header and rep slice are the correct types for this hypercall.
@@ -373,7 +384,7 @@ impl HvCall {
 
             let n = r.elements_processed();
             output.extend(
-                <[u32]>::ref_from_bytes(&Self::output_page().buffer[..n * 4])
+                <[u32]>::ref_from_bytes(&self.output_page()[..n * 4])
                     .unwrap()
                     .iter()
                     .copied(),
