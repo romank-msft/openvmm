@@ -9,8 +9,10 @@ use super::address_space::X64_PAGE_SHIFT;
 use super::address_space::X64_PTE_ACCESSED;
 use super::address_space::X64_PTE_PRESENT;
 use super::address_space::X64_PTE_READ_WRITE;
+use crate::PageAlign;
 use crate::arch::x86_64::address_space::X64_PTE_CONFIDENTIAL;
 use crate::single_threaded::SingleThreaded;
+use crate::zeroed;
 use bitfield_struct::bitfield;
 use core::arch::asm;
 use core::cell::UnsafeCell;
@@ -131,8 +133,8 @@ static PAGE_TABLE: SingleThreaded<UnsafeCell<PageTable>> =
     }));
 
 /// The GHCB page itself.
-static GHCB: SingleThreaded<UnsafeCell<[u8; size_of::<GhcbPage>()]>> =
-    SingleThreaded(UnsafeCell::new([0; size_of::<GhcbPage>()]));
+static GHCB: SingleThreaded<UnsafeCell<PageAlign<[u8; size_of::<GhcbPage>()]>>> =
+    SingleThreaded(UnsafeCell::new(zeroed()));
 
 fn ghcb_page_number() -> u64 {
     // Identical mapping, the GVA is the same as the GPA.
@@ -212,6 +214,12 @@ enum IoAccessSize {
 
 impl Ghcb {
     pub fn initialize() {
+        // Make sure page alignment.
+        assert!((GHCB.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
+        assert!((PAGE_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
+        assert!((PD_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
+        assert!((PDP_TABLE.get() as u64) & (X64_PAGE_SIZE - 1) == 0);
+
         // Map the GHCB page in the guest as non-confidential.
 
         let page_root = get_cr3() & !(X64_PAGE_SIZE - 1);
