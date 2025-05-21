@@ -107,7 +107,7 @@ mod details {
             // of the functions that use it are such that they cannot be
             // called concurrently.
             unsafe { HVCALL_OUTPUT.get().as_mut() }
-                .expect("input page")
+                .expect("output page")
                 .0
                 .as_slice()
         }
