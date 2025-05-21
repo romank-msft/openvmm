@@ -731,7 +731,8 @@ pub struct GhcbSaveArea {
     pub sw_scratch: u64,
     pub reserved_0x3b0: [u8; 56],
     pub xcr0: u64,
-    pub valid_bitmap: [u64; 2],
+    pub valid_bitmap0: u64,
+    pub valid_bitmap1: u64,
     pub x87_state_gpa: u64,
 }
 
