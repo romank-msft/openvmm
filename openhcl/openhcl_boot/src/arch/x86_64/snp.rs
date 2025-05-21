@@ -202,81 +202,6 @@ fn pte_for_pfn(pfn: u64, confidential: bool) -> u64 {
     }
 }
 
-fn map_ghcb_page() {
-    let page_root = get_cr3() & !(X64_PAGE_SIZE - 1);
-    let pml4table = page_table(page_root >> X64_PAGE_SHIFT);
-    assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
-
-    // Running in identical mapping.
-    let pdp_table_pfn = (PDP_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-    let pd_table_pfn = (PD_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-    let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-    let page_number = ghcb_page_number();
-
-    let pdp_table = page_table(pdp_table_pfn);
-    let pd_table = page_table(pd_table_pfn);
-    let page_table = page_table(page_table_pfn);
-
-    pml4table[PML4_INDEX] = pte_for_pfn(pdp_table_pfn, true);
-    pdp_table[PDP_INDEX] = pte_for_pfn(pd_table_pfn, true);
-    pd_table[PD_INDEX] = pte_for_pfn(page_table_pfn, true);
-    page_table[PT_INDEX] = pte_for_pfn(page_number, true);
-
-    flush_tlb();
-    // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_GVA.into_bits());
-
-    // Unaccept the page, invalidates page state.
-    pvalidate(page_number, GHCB_GVA.into_bits(), false, false).expect("memory unaccept");
-    // Issue VMG exit to request the hypervisor to update the page state to host visible in RMP.
-    let resp = Ghcb::ghcb_call(GhcbCall {
-        info: GhcbInfo::PAGE_STATE_CHANGE,
-        extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED,
-        page_number,
-    });
-    assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
-
-    // Map the page as non-confidential by updating the PTE.
-    page_table[PT_INDEX] = pte_for_pfn(page_number, false);
-    flush_tlb();
-    // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_GVA.into_bits());
-
-    // Flipping the C-bit makes the contents of the GHCB page scrambled,
-    // zero it out.
-    Ghcb::ghcb_mut().as_mut_bytes().fill(0);
-}
-
-/// Unmap the GHCB page.
-fn unmap_ghcb_page() {
-    // Evict the page from the cache before changing the encrypted state.
-    cache_lines_flush_page(GHCB_GVA.into_bits());
-
-    // Update the page table entry to make it confidential.
-    // Running in identical mapping.
-    let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
-    let page_table = page_table(page_table_pfn);
-    let page_number = ghcb_page_number();
-
-    page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
-    flush_tlb();
-
-    // Issue VMG exit to request the hypervisor to update the page state to private in RMP.
-    let resp = Ghcb::ghcb_call(GhcbCall {
-        info: GhcbInfo::PAGE_STATE_CHANGE,
-        extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE,
-        page_number,
-    });
-    assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
-
-    // Accept the page, invalidates page state.
-    pvalidate(page_number, GHCB_GVA.into_bits(), false, true).expect("memory accept");
-
-    // Flipping the C-bit makes the contents of the GHCB page scrambled,
-    // zero it out.
-    Ghcb::ghcb_mut().as_mut_bytes().fill(0);
-}
-
 #[allow(dead_code)]
 enum IoAccessSize {
     Byte = 1,
@@ -286,28 +211,103 @@ enum IoAccessSize {
 
 impl Ghcb {
     pub fn initialize() {
-        // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
-        GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
+        // Map the GHCB page in the guest as non-confidential.
 
-        map_ghcb_page();
+        let page_root = get_cr3() & !(X64_PAGE_SIZE - 1);
+        let pml4table = page_table(page_root >> X64_PAGE_SHIFT);
+        assert!(pml4table[PML4_INDEX] & X64_PTE_PRESENT == 0);
+
+        // Running in identical mapping.
+        let pdp_table_pfn = (PDP_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+        let pd_table_pfn = (PD_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+        let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+        let page_number = ghcb_page_number();
+
+        let pdp_table = page_table(pdp_table_pfn);
+        let pd_table = page_table(pd_table_pfn);
+        let page_table = page_table(page_table_pfn);
+
+        pml4table[PML4_INDEX] = pte_for_pfn(pdp_table_pfn, true);
+        pdp_table[PDP_INDEX] = pte_for_pfn(pd_table_pfn, true);
+        pd_table[PD_INDEX] = pte_for_pfn(page_table_pfn, true);
+        page_table[PT_INDEX] = pte_for_pfn(page_number, true);
+
+        flush_tlb();
+        // Evict the page from the cache before changing the encrypted state.
+        cache_lines_flush_page(GHCB_GVA.into_bits());
+
+        // Unaccept the page, invalidates page state.
+        pvalidate(page_number, GHCB_GVA.into_bits(), false, false).expect("memory unaccept");
+        // Issue VMG exit to request the hypervisor to update the page state to host visible in RMP.
+        let resp = Ghcb::ghcb_call(GhcbCall {
+            info: GhcbInfo::PAGE_STATE_CHANGE,
+            extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_SHARED,
+            page_number,
+        });
+        assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
+
+        // Map the page as non-confidential by updating the PTE.
+        page_table[PT_INDEX] = pte_for_pfn(page_number, false);
+        flush_tlb();
+        // Evict the page from the cache before changing the encrypted state.
+        cache_lines_flush_page(GHCB_GVA.into_bits());
+
+        // Flipping the C-bit makes the contents of the GHCB page scrambled,
+        // zero it out.
+        Ghcb::ghcb_mut().as_mut_bytes().fill(0);
         Self::ghcb_mut().protocol_version = GhcbProtocolVersion::V2;
+
+        // Register the GHCB page with the hypervisor.
 
         let resp = Self::ghcb_call(GhcbCall {
             extra_data: 0,
             page_number: ghcb_page_number(),
             info: GhcbInfo::REGISTER_REQUEST,
         });
-
         assert!(
             resp.info() == GhcbInfo::REGISTER_RESPONSE
                 && resp.extra_data() == 0
                 && resp.pfn() == ghcb_page_number(),
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
+
+        // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
+        GHCB_PREVIOUS.store(unsafe { read_msr(X86X_AMD_MSR_GHCB) }, Ordering::Release);
     }
 
     pub fn uninitialize() {
-        unmap_ghcb_page();
+        // Map the GHCB page in the guest as confidential and accept it again
+        // to return to the original state.
+
+        // Evict the page from the cache before changing the encrypted state.
+        cache_lines_flush_page(GHCB_GVA.into_bits());
+
+        // Update the page table entry to make it confidential.
+        // Running in identical mapping.
+        let page_table_pfn = (PAGE_TABLE.get() as u64) >> X64_PAGE_SHIFT;
+        let page_table = page_table(page_table_pfn);
+        let page_number = ghcb_page_number();
+
+        page_table[PT_INDEX] |= X64_PTE_CONFIDENTIAL;
+
+        // Issue VMG exit to request the hypervisor to update the page state to private in RMP.
+        let resp = Ghcb::ghcb_call(GhcbCall {
+            info: GhcbInfo::PAGE_STATE_CHANGE,
+            extra_data: x86defs::snp::GHCB_DATA_PAGE_STATE_PRIVATE,
+            page_number,
+        });
+        assert!(resp.into_bits() == GhcbInfo::PAGE_STATE_UPDATED.0);
+
+        // Accept the page, invalidates page state.
+        pvalidate(page_number, GHCB_GVA.into_bits(), false, true).expect("memory accept");
+
+        // Needed here, not before.
+        flush_tlb();
+
+        // Flipping the C-bit makes the contents of the GHCB page scrambled,
+        // zero it out.
+        Ghcb::ghcb_mut().as_mut_bytes().fill(0);
+
         // SAFETY: Always safe to write the GHCB MSR, no concurrency issues.
         unsafe { write_msr(X86X_AMD_MSR_GHCB, GHCB_PREVIOUS.load(Ordering::Acquire)) };
     }
