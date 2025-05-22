@@ -751,7 +751,7 @@ const _: () = assert!(size_of::<GhcbPage>() == X64_PAGE_SIZE as usize);
 
 pub const GHCB_PAGE_HV_HYPERCALL_DATA_SIZE: usize = 4072;
 
-/// GHCB layout for Hyper-V hypercalls.
+/// GHCB layout for the secure enlightened Hyper-V hypercalls.
 #[repr(C, align(4096))]
 #[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
 pub struct GhcbPageHvHypercall {
