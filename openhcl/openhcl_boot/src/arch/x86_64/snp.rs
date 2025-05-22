@@ -254,12 +254,12 @@ mod ghcb_access {
     }
 
     macro_rules! ghcb_save_field_set {
-        ($field:ident, $type:ty, $val:expr) => {{
+        ($field:ident, $type:ty, $func:ident, $val:expr) => {{
             // SAFETY: Atomic access to the GHCB page.
             let ghcb_data = unsafe { ghcb_data::<$type>() };
             // Save area is at the beginning of the GHCB page.
             let pos = offset_of!(GhcbSaveArea, $field) / size_of::<$type>();
-            ghcb_data[pos].store($val, Ordering::SeqCst);
+            ghcb_data[pos].$func($val, Ordering::SeqCst);
         }};
     }
 
@@ -280,6 +280,39 @@ mod ghcb_access {
             .for_each(|x| x.store(0, Ordering::SeqCst));
     }
 
+    pub fn clear_bitmaps() {
+        ghcb_save_field_set!(valid_bitmap0, AtomicU64, store, 0);
+        ghcb_save_field_set!(valid_bitmap1, AtomicU64, store, 0);
+    }
+
+    macro_rules! ghcb_save_set_valid_bitmap0 {
+        ($save_field:ident) => {{
+            let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8);
+            ghcb_save_field_set!(valid_bitmap0, AtomicU64, fetch_or, mask);
+        }};
+    }
+
+    macro_rules! ghcb_save_set_valid_bitmap1 {
+        ($save_field:ident) => {{
+            let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8 - 64);
+            ghcb_save_field_set!(valid_bitmap1, AtomicU64, fetch_or, mask);
+        }};
+    }
+
+    macro_rules! ghcb_save_assert_valid_bitmap0 {
+        ($save_field:ident) => {{
+            let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8);
+            assert_eq!(ghcb_save_field_get!(valid_bitmap0, AtomicU64) & mask, mask);
+        }};
+    }
+
+    macro_rules! ghcb_save_assert_valid_bitmap1 {
+        ($save_field:ident) => {{
+            let mask = 1u64 << (offset_of!(GhcbSaveArea, $save_field) / 8 - 64);
+            assert_eq!(ghcb_save_field_get!(valid_bitmap1, AtomicU64) & mask, mask);
+        }};
+    }
+
     pub fn set_usage(usage: GhcbUsage) {
         ghcb_field_set!(ghcb_usage, AtomicU32, usage.into_bits());
     }
@@ -289,46 +322,47 @@ mod ghcb_access {
     }
 
     pub fn set_sw_exit_code(code: u64) {
-        ghcb_save_field_set!(sw_exit_code, AtomicU64, code);
+        ghcb_save_field_set!(sw_exit_code, AtomicU64, store, code);
+        ghcb_save_set_valid_bitmap1!(sw_exit_code);
     }
 
     pub fn set_sw_exit_info1(info: u64) {
-        ghcb_save_field_set!(sw_exit_info1, AtomicU64, info);
+        ghcb_save_field_set!(sw_exit_info1, AtomicU64, store, info);
+        ghcb_save_set_valid_bitmap1!(sw_exit_info1);
     }
 
     pub fn sw_exit_info1() -> u64 {
+        ghcb_save_assert_valid_bitmap1!(sw_exit_info1);
         ghcb_save_field_get!(sw_exit_info1, AtomicU64)
     }
 
     pub fn set_sw_exit_info2(info: u64) {
-        ghcb_save_field_set!(sw_exit_info2, AtomicU64, info);
-    }
-
-    pub fn set_valid_bitmap0(bitmap: u64) {
-        ghcb_save_field_set!(valid_bitmap0, AtomicU64, bitmap);
-    }
-
-    pub fn set_valid_bitmap1(bitmap: u64) {
-        ghcb_save_field_set!(valid_bitmap1, AtomicU64, bitmap);
+        ghcb_save_field_set!(sw_exit_info2, AtomicU64, store, info);
+        ghcb_save_set_valid_bitmap1!(sw_exit_info2);
     }
 
     pub fn set_rax(rax: u64) {
-        ghcb_save_field_set!(rax, AtomicU64, rax);
+        ghcb_save_field_set!(rax, AtomicU64, store, rax);
+        ghcb_save_set_valid_bitmap0!(rax);
     }
 
     pub fn rax() -> u64 {
+        ghcb_save_assert_valid_bitmap0!(rax);
         ghcb_save_field_get!(rax, AtomicU64)
     }
 
     pub fn set_rcx(rcx: u64) {
-        ghcb_save_field_set!(rcx, AtomicU64, rcx);
+        ghcb_save_field_set!(rcx, AtomicU64, store, rcx);
+        ghcb_save_set_valid_bitmap1!(rcx);
     }
 
     pub fn set_rdx(rdx: u64) {
-        ghcb_save_field_set!(rdx, AtomicU64, rdx);
+        ghcb_save_field_set!(rdx, AtomicU64, store, rdx);
+        ghcb_save_set_valid_bitmap1!(rdx);
     }
 
     pub fn rdx() -> u64 {
+        ghcb_save_assert_valid_bitmap1!(rdx);
         ghcb_save_field_get!(rdx, AtomicU64)
     }
 
@@ -366,12 +400,12 @@ mod ghcb_access {
         }};
     }
 
-    pub fn set_hypercall_data(data: &[u8]) {
+    pub fn set_hypercall_data(data: &[u8], start: usize) {
         // SAFETY: Atomic access to the GHCB page.
         let ghcb_data = unsafe { ghcb_hv_hypercall::<AtomicU8>() };
         assert!(data.len() <= GHCB_PAGE_HV_HYPERCALL_DATA_SIZE);
 
-        ghcb_data[..data.len()]
+        ghcb_data[start..start + data.len()]
             .iter()
             .zip(data.iter())
             .for_each(|(x, y)| x.store(*y, Ordering::SeqCst));
@@ -383,6 +417,10 @@ mod ghcb_access {
 
     pub fn hypercall_output() -> u64 {
         ghcb_hv_hypercall_field_get!(io, AtomicU64)
+    }
+
+    pub fn set_hypercall_output_gpa(gpa: u64) {
+        ghcb_hv_hypercall_field_set!(output_gpa, AtomicU64, gpa);
     }
 }
 
@@ -580,7 +618,7 @@ impl Ghcb {
     fn read_io_port(port: u16, access_size: IoAccessSize) -> Option<u32> {
         ghcb_access::set_usage(GhcbUsage::BASE);
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
-        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
+        ghcb_access::clear_bitmaps();
 
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
@@ -591,14 +629,9 @@ impl Ghcb {
             IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
 
+        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
         ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
         ghcb_access::set_sw_exit_info2(0);
-        ghcb_access::set_valid_bitmap0(0);
-        ghcb_access::set_valid_bitmap1(
-            (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
-        );
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
@@ -618,7 +651,7 @@ impl Ghcb {
     fn write_io_port(port: u16, access_size: IoAccessSize, data: u32) -> bool {
         ghcb_access::set_usage(GhcbUsage::BASE);
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
-        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
+        ghcb_access::clear_bitmaps();
 
         let io_exit_info = SevIoAccessInfo::new()
             .with_port(port)
@@ -629,15 +662,11 @@ impl Ghcb {
             IoAccessSize::Dword => io_exit_info.with_access_size32(true),
         };
 
+        ghcb_access::set_sw_exit_code(SevExitCode::IOIO.0);
         ghcb_access::set_sw_exit_info1(io_exit_info.into_bits().into());
         ghcb_access::set_sw_exit_info2(0);
+
         ghcb_access::set_rax(data as u64);
-        ghcb_access::set_valid_bitmap0(1u64 << offset_of!(GhcbSaveArea, rax) / 8);
-        ghcb_access::set_valid_bitmap1(
-            (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
-        );
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
@@ -653,21 +682,15 @@ impl Ghcb {
     pub fn set_msr(msr_index: u32, value: u64) -> bool {
         ghcb_access::set_usage(GhcbUsage::BASE);
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
+        ghcb_access::clear_bitmaps();
+
         ghcb_access::set_sw_exit_code(SevExitCode::MSR.0);
+        ghcb_access::set_sw_exit_info1(1);
+        ghcb_access::set_sw_exit_info2(0);
 
         ghcb_access::set_rcx(msr_index as u64);
         ghcb_access::set_rax(value as u32 as u64);
         ghcb_access::set_rdx((value >> 32) as u32 as u64);
-        ghcb_access::set_sw_exit_info1(1);
-        ghcb_access::set_sw_exit_info2(0);
-        ghcb_access::set_valid_bitmap0(1u64 << offset_of!(GhcbSaveArea, rax) / 8);
-        ghcb_access::set_valid_bitmap1(
-            (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, rdx) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
-        );
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
@@ -683,18 +706,13 @@ impl Ghcb {
     pub fn get_msr(msr_index: u32) -> Option<u64> {
         ghcb_access::set_usage(GhcbUsage::BASE);
         ghcb_access::set_protocol_version(GhcbProtocolVersion::V2);
-        ghcb_access::set_sw_exit_code(SevExitCode::MSR.0);
+        ghcb_access::clear_bitmaps();
 
-        ghcb_access::set_rcx(msr_index as u64);
+        ghcb_access::set_sw_exit_code(SevExitCode::MSR.0);
         ghcb_access::set_sw_exit_info1(0);
         ghcb_access::set_sw_exit_info2(0);
-        ghcb_access::set_valid_bitmap0(0);
-        ghcb_access::set_valid_bitmap1(
-            (1u64 << (offset_of!(GhcbSaveArea, rcx) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_code) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info1) / 8 - 64))
-                | (1u64 << (offset_of!(GhcbSaveArea, sw_exit_info2) / 8 - 64)),
-        );
+
+        ghcb_access::set_rcx(msr_index as u64);
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
@@ -710,45 +728,30 @@ impl Ghcb {
         }
     }
 
-    #[must_use]
     pub fn set_register(
         name: HvX64RegisterName,
         value: HvRegisterValue,
     ) -> Result<(), hvdef::HvError> {
-        const MAX_HYPERCALL_DATA_SIZE: usize = 512;
-        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
-
-        let mut hypercall_data = [0u8; MAX_HYPERCALL_DATA_SIZE];
-
         let header = hvdef::hypercall::GetSetVpRegisters {
             partition_id: hvdef::HV_PARTITION_ID_SELF,
             vp_index: hvdef::HV_VP_INDEX_SELF,
             target_vtl: HvInputVtl::CURRENT_VTL,
             rsvd: [0; 3],
         };
-
-        // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header
-            .write_to_prefix(hypercall_data.as_mut_slice())
-            .unwrap();
-
         let reg = hvdef::hypercall::HvRegisterAssoc {
             name: name.into(),
             pad: Default::default(),
             value,
         };
-
-        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
-        reg.write_to_prefix(&mut hypercall_data.as_mut_slice()[HEADER_SIZE..])
-            .unwrap();
-
         let control = hvdef::hypercall::Control::new()
             .with_code(hvdef::HypercallCode::HvCallSetVpRegisters.0)
             .with_rep_count(1);
 
         ghcb_access::set_usage(GhcbUsage::HYPERCALL);
-        ghcb_access::set_hypercall_data(&hypercall_data);
-        ghcb_access::set_hypercall_input(control.into_bits() as u64);
+        ghcb_access::set_hypercall_data(header.as_bytes(), 0);
+        ghcb_access::set_hypercall_data(reg.as_bytes(), size_of_val(&header));
+        ghcb_access::set_hypercall_input(control.into_bits());
+        ghcb_access::set_hypercall_output_gpa(0);
 
         Self::ghcb_call(GhcbCall {
             info: GhcbInfo::NORMAL,
@@ -756,9 +759,8 @@ impl Ghcb {
             page_number: ghcb_access::page_number(),
         });
         ghcb_access::set_usage(GhcbUsage::INVALID);
-        let output = HypercallOutput::from_bits(ghcb_access::hypercall_output());
 
-        output.result()
+        HypercallOutput::from_bits(ghcb_access::hypercall_output()).result()
     }
 }
 
