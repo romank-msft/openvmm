@@ -19,6 +19,10 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::sync::atomic::fence;
+use hvdef::HvRegisterValue;
+use hvdef::HvX64RegisterName;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HypercallOutput;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
@@ -31,6 +35,7 @@ use x86defs::snp::GhcbSaveArea;
 use x86defs::snp::GhcbUsage;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
+use zerocopy::IntoBytes;
 
 static GHCB_PREVIOUS: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
@@ -197,11 +202,14 @@ mod ghcb_access {
     use crate::arch::x86_64::address_space::X64_PAGE_SHIFT;
     use crate::zeroed;
     use core::mem::offset_of;
+    use core::sync::atomic::AtomicU8;
     use core::sync::atomic::AtomicU16;
     use core::sync::atomic::AtomicU32;
     use core::sync::atomic::AtomicU64;
     use core::sync::atomic::Ordering;
+    use x86defs::snp::GHCB_PAGE_HV_HYPERCALL_DATA_SIZE;
     use x86defs::snp::GhcbPage;
+    use x86defs::snp::GhcbPageHvHypercall;
     use x86defs::snp::GhcbProtocolVersion;
     use x86defs::snp::GhcbSaveArea;
     use x86defs::snp::GhcbUsage;
@@ -316,16 +324,65 @@ mod ghcb_access {
         ghcb_save_field_set!(rcx, AtomicU64, rcx);
     }
 
-    pub fn rcx() -> u64 {
-        ghcb_save_field_get!(rcx, AtomicU64)
-    }
-
     pub fn set_rdx(rdx: u64) {
         ghcb_save_field_set!(rdx, AtomicU64, rdx);
     }
 
     pub fn rdx() -> u64 {
         ghcb_save_field_get!(rdx, AtomicU64)
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that the GHCB page is properly mapped
+    /// and can be accessed in a memory-safe manner.
+    unsafe fn ghcb_hv_hypercall<T>() -> &'static mut [T] {
+        // SAFETY: The GHCB page is statically allocated and initialized.
+        // It is either mapped by the time of access, or the code won't
+        // be executed at all due to the hardware fault.
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                GHCB_GVA.into_bits() as *mut T,
+                size_of::<GhcbPageHvHypercall>() / size_of::<T>(),
+            )
+        }
+    }
+
+    macro_rules! ghcb_hv_hypercall_field_set {
+        ($field:ident, $type:ty, $val:expr) => {{
+            // SAFETY: Atomic access to the GHCB page.
+            let ghcb_data = unsafe { ghcb_hv_hypercall::<$type>() };
+            let pos = offset_of!(GhcbPageHvHypercall, $field) / size_of::<$type>();
+            ghcb_data[pos].store($val, Ordering::SeqCst);
+        }};
+    }
+
+    macro_rules! ghcb_hv_hypercall_field_get {
+        ($field:ident, $type:ty) => {{
+            // SAFETY: Atomic access to the GHCB page.
+            let ghcb_data = unsafe { ghcb_hv_hypercall::<$type>() };
+            let pos = offset_of!(GhcbPageHvHypercall, $field) / size_of::<$type>();
+            ghcb_data[pos].load(Ordering::SeqCst)
+        }};
+    }
+
+    pub fn set_hypercall_data(data: &[u8]) {
+        // SAFETY: Atomic access to the GHCB page.
+        let ghcb_data = unsafe { ghcb_hv_hypercall::<AtomicU8>() };
+        assert!(data.len() <= GHCB_PAGE_HV_HYPERCALL_DATA_SIZE);
+
+        ghcb_data[..data.len()]
+            .iter()
+            .zip(data.iter())
+            .for_each(|(x, y)| x.store(*y, Ordering::SeqCst));
+    }
+
+    pub fn set_hypercall_input(input: u64) {
+        ghcb_hv_hypercall_field_set!(io, AtomicU64, input);
+    }
+
+    pub fn hypercall_output() -> u64 {
+        ghcb_hv_hypercall_field_get!(io, AtomicU64)
     }
 }
 
@@ -403,6 +460,12 @@ impl Ghcb {
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
 
+        Self::set_register(
+            HvX64RegisterName::SevGhcbGpa,
+            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x1).into(),
+        )
+        .expect("GHCB: Failed to set GHCB GPA");
+
         // Register to issue Hyper-V hypercalls via GHCB.
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
         assert!(Self::set_msr(
@@ -420,6 +483,10 @@ impl Ghcb {
     }
 
     pub fn uninitialize() {
+        // Needed so that the hypervisor unmaps the overlay page.
+        Self::set_register(HvX64RegisterName::SevGhcbGpa, 0u64.into())
+            .expect("GHCB: Failed to unset GHCB GPA");
+
         // Map the GHCB page in the guest as confidential and accept it again
         // to return to the original state.
 
@@ -641,6 +708,57 @@ impl Ghcb {
         } else {
             Some(ghcb_access::rax() | (ghcb_access::rdx() << 32))
         }
+    }
+
+    #[must_use]
+    pub fn set_register(
+        name: HvX64RegisterName,
+        value: HvRegisterValue,
+    ) -> Result<(), hvdef::HvError> {
+        const MAX_HYPERCALL_DATA_SIZE: usize = 512;
+        const HEADER_SIZE: usize = size_of::<hvdef::hypercall::GetSetVpRegisters>();
+
+        let mut hypercall_data = [0u8; MAX_HYPERCALL_DATA_SIZE];
+
+        let header = hvdef::hypercall::GetSetVpRegisters {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index: hvdef::HV_VP_INDEX_SELF,
+            target_vtl: HvInputVtl::CURRENT_VTL,
+            rsvd: [0; 3],
+        };
+
+        // PANIC: Infallable, since the hypercall header is less than the size of a page
+        header
+            .write_to_prefix(hypercall_data.as_mut_slice())
+            .unwrap();
+
+        let reg = hvdef::hypercall::HvRegisterAssoc {
+            name: name.into(),
+            pad: Default::default(),
+            value,
+        };
+
+        // PANIC: Infallable, since the hypercall parameter (plus size of header above) is less than the size of a page
+        reg.write_to_prefix(&mut hypercall_data.as_mut_slice()[HEADER_SIZE..])
+            .unwrap();
+
+        let control = hvdef::hypercall::Control::new()
+            .with_code(hvdef::HypercallCode::HvCallSetVpRegisters.0)
+            .with_rep_count(1);
+
+        ghcb_access::set_usage(GhcbUsage::HYPERCALL);
+        ghcb_access::set_hypercall_data(&hypercall_data);
+        ghcb_access::set_hypercall_input(control.into_bits() as u64);
+
+        Self::ghcb_call(GhcbCall {
+            info: GhcbInfo::NORMAL,
+            extra_data: 0,
+            page_number: ghcb_access::page_number(),
+        });
+        ghcb_access::set_usage(GhcbUsage::INVALID);
+        let output = HypercallOutput::from_bits(ghcb_access::hypercall_output());
+
+        output.result()
     }
 }
 
