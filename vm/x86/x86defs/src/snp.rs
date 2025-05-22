@@ -749,6 +749,20 @@ pub struct GhcbPage {
 
 const _: () = assert!(size_of::<GhcbPage>() == X64_PAGE_SIZE as usize);
 
+pub const GHCB_PAGE_HV_HYPERCALL_DATA_SIZE: usize = 4072;
+
+/// GHCB layout for Hyper-V hypercalls.
+#[repr(C, align(4096))]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbPageHvHypercall {
+    pub data: [u8; GHCB_PAGE_HV_HYPERCALL_DATA_SIZE],
+    pub output_gpa: u64,
+    pub io: u64,
+    pub reserved: u64,
+}
+
+const _: () = assert!(size_of::<GhcbPageHvHypercall>() == X64_PAGE_SIZE as usize);
+
 /// Struct representing GHCB hypercall parameters. These are located at the GHCB
 /// page starting at [`GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET`].
 #[repr(C)]
