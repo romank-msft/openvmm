@@ -46,13 +46,15 @@ cargo run -p tmk_vmm -- --tmk ${VTL0_KERNEL} --list
 ## Generate the resource file
 RESOURCES_FILE="openhcl-x64-direct-resources.json"
 OPENHCL_KERNEL="../OHCL-Linux-Kernel/out/build/native/bin/x64/vmlinux"
+UEFI="./flowey-persist/flowey_lib_hvlite__download_uefi_mu_msvm/extracted/RELEASE-X64-artifacts.zip/FV/MSVM.fd"
 RESOURCES="{
     \"resources\":
         {
             \"underhill_kernel\":   \"$(realpath ${OPENHCL_KERNEL})\",
             \"underhill_initrd\":   \"$(realpath ${OPENHCL_INITRD})\",
             \"openhcl_boot\":       \"$(realpath ${OPENHCL_BOOT})\",
-            \"static_elf\":               \"$(realpath ${VTL0_KERNEL})\"
+            \"uefi\":               \"$(realpath ${UEFI})\",
+            \"static_elf\":         \"$(realpath ${VTL0_KERNEL})\"
         }
 }"
 echo ${RESOURCES} | jq . > ${RESOURCES_FILE}
