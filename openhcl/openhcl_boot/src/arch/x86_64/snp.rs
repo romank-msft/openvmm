@@ -510,24 +510,11 @@ impl Ghcb {
         Self::set_register(HvX64RegisterName::GuestOsId, guest_os_id.into_bits().into())
             .expect("failed to set guest OS ID");
 
-        Self::set_register(
-            HvX64RegisterName::SevGhcbGpa,
-            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x1).into(),
-        )
-        .expect("GHCB: Failed to set GHCB GPA");
-
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
         GHCB_PREVIOUS.replace(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
     }
 
     pub fn uninitialize() {
-        // Needed so that the hypervisor unmaps the overlay page.
-        Self::set_register(
-            HvX64RegisterName::SevGhcbGpa,
-            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x0).into(),
-        )
-        .expect("GHCB: Failed to unset GHCB GPA");
-
         // Unregister from issuing Hyper-V hypercalls.
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new();
         Self::set_register(HvX64RegisterName::GuestOsId, guest_os_id.into_bits().into())
@@ -540,6 +527,19 @@ impl Ghcb {
         assert!(
             Self::get_msr(hvdef::HV_X64_MSR_GUEST_OS_ID).expect("GHCB: Failed to set guest OS ID")
                 == guest_os_id.into()
+        );
+
+        // A silly trick to unmap the GHCB overlay page.
+        let resp = Self::ghcb_call(GhcbCall {
+            extra_data: 0,
+            page_number: 0,
+            info: GhcbInfo::REGISTER_REQUEST,
+        });
+        assert!(
+            resp.info() == GhcbInfo::REGISTER_RESPONSE.0
+                && resp.extra_data() == 0
+                && resp.pfn() == 0,
+            "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
 
         // Map the GHCB page in the guest as confidential and accept it again
