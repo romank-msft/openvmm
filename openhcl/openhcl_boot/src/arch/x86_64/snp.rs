@@ -15,7 +15,6 @@ use bitfield_struct::bitfield;
 use core::arch::asm;
 use core::cell::Cell;
 use core::cell::UnsafeCell;
-use core::mem::offset_of;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::sync::atomic::fence;
@@ -31,7 +30,6 @@ use x86defs::X86X_AMD_MSR_GHCB;
 use x86defs::snp::GhcbInfo;
 use x86defs::snp::GhcbMsr;
 use x86defs::snp::GhcbProtocolVersion;
-use x86defs::snp::GhcbSaveArea;
 use x86defs::snp::GhcbUsage;
 use x86defs::snp::SevExitCode;
 use x86defs::snp::SevIoAccessInfo;
@@ -498,13 +496,7 @@ impl Ghcb {
             "GhcbInfo::REGISTER_RESPONSE returned msr value {resp:x?}"
         );
 
-        Self::set_register(
-            HvX64RegisterName::SevGhcbGpa,
-            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x1).into(),
-        )
-        .expect("GHCB: Failed to set GHCB GPA");
-
-        // Register to issue Hyper-V hypercalls via GHCB.
+        // Register to issue Hyper-V hypercalls.
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
         assert!(Self::set_msr(
             hvdef::HV_X64_MSR_GUEST_OS_ID,
@@ -515,6 +507,14 @@ impl Ghcb {
             Self::get_msr(hvdef::HV_X64_MSR_GUEST_OS_ID).expect("GHCB: Failed to set guest OS ID")
                 == guest_os_id.into()
         );
+        Self::set_register(HvX64RegisterName::GuestOsId, guest_os_id.into_bits().into())
+            .expect("failed to set guest OS ID");
+
+        Self::set_register(
+            HvX64RegisterName::SevGhcbGpa,
+            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x1).into(),
+        )
+        .expect("GHCB: Failed to set GHCB GPA");
 
         // SAFETY: Always safe to read the GHCB MSR, no concurrency issues.
         GHCB_PREVIOUS.replace(unsafe { read_msr(X86X_AMD_MSR_GHCB) });
@@ -522,8 +522,25 @@ impl Ghcb {
 
     pub fn uninitialize() {
         // Needed so that the hypervisor unmaps the overlay page.
-        Self::set_register(HvX64RegisterName::SevGhcbGpa, 0u64.into())
-            .expect("GHCB: Failed to unset GHCB GPA");
+        Self::set_register(
+            HvX64RegisterName::SevGhcbGpa,
+            ((ghcb_access::page_number() << X64_PAGE_SHIFT) | 0x0).into(),
+        )
+        .expect("GHCB: Failed to unset GHCB GPA");
+
+        // Unregister from issuing Hyper-V hypercalls.
+        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new();
+        Self::set_register(HvX64RegisterName::GuestOsId, guest_os_id.into_bits().into())
+            .expect("failed to set guest OS ID");
+        assert!(Self::set_msr(
+            hvdef::HV_X64_MSR_GUEST_OS_ID,
+            guest_os_id.into()
+        ));
+        // and make sure it is set as expected.
+        assert!(
+            Self::get_msr(hvdef::HV_X64_MSR_GUEST_OS_ID).expect("GHCB: Failed to set guest OS ID")
+                == guest_os_id.into()
+        );
 
         // Map the GHCB page in the guest as confidential and accept it again
         // to return to the original state.
@@ -738,7 +755,7 @@ impl Ghcb {
             target_vtl: HvInputVtl::CURRENT_VTL,
             rsvd: [0; 3],
         };
-        let reg = hvdef::hypercall::HvRegisterAssoc {
+        let reg_assoc = hvdef::hypercall::HvRegisterAssoc {
             name: name.into(),
             pad: Default::default(),
             value,
@@ -749,7 +766,7 @@ impl Ghcb {
 
         ghcb_access::set_usage(GhcbUsage::HYPERCALL);
         ghcb_access::set_hypercall_data(header.as_bytes(), 0);
-        ghcb_access::set_hypercall_data(reg.as_bytes(), size_of_val(&header));
+        ghcb_access::set_hypercall_data(reg_assoc.as_bytes(), size_of_val(&header));
         ghcb_access::set_hypercall_input(control.into_bits());
         ghcb_access::set_hypercall_output_gpa(0);
 
