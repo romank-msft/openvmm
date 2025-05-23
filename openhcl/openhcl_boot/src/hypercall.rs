@@ -245,7 +245,7 @@ impl HvCallNoHardIsolation {
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
+            header.write_to_prefix(self.input_page_mut()).unwrap();
 
             let mut input_offset = HEADER_SIZE;
             for i in 0..count {
@@ -284,7 +284,7 @@ impl HvCallNoHardIsolation {
         };
 
         // PANIC: Infallable, since the hypercall header is less than the size of a page
-        header.write_to_prefix(&mut self.input_page_mut()).unwrap();
+        header.write_to_prefix(self.input_page_mut()).unwrap();
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
         match output.result() {
@@ -321,7 +321,7 @@ impl HvCallNoHardIsolation {
             let count = remaining_pages.min(MAX_INPUT_ELEMENTS as u64) as usize;
 
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
+            header.write_to_prefix(self.input_page_mut()).unwrap();
 
             let output =
                 self.dispatch_hvcall(hvdef::HypercallCode::HvCallAcceptGpaPages, Some(count));
