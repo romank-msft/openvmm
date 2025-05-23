@@ -356,7 +356,7 @@ impl HvCallNoHardIsolation {
 
         for hw_ids in hw_ids.chunks(MAX_PER_CALL) {
             // PANIC: Infallable, since the hypercall header is less than the size of a page
-            header.write_to_prefix(&mut self.input_page_mut()).unwrap();
+            header.write_to_prefix(self.input_page_mut()).unwrap();
             // PANIC: Infallable, since the hypercall parameters are chunked to be less
             // than the remaining size (after the header) of the input page.
             // todo: This is *not true* for aarch64, where the hw_ids are u64s. Tracked via
