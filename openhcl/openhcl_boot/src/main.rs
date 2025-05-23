@@ -673,7 +673,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         partition_info,
         &mut sidecar_params.0,
         &mut sidecar_output.0,
-        hvcall.hypercall_page().expect("hypercall page"),
+        hvcall.hypercall_page().unwrap_or(0),
     );
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
