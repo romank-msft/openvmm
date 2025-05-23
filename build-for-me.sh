@@ -80,10 +80,11 @@ cat <<EOF > ${SNP_MANIFEST_FILE}
             "image": {
                 "openhcl": {
                     "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=static_elf OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
-                    "memory_page_count": 245760,
+                    "memory_page_count": 163840,
+                    "memory_page_base": 32768,
                     "uefi": false,
                     "static_elf": {
-                        "start_address": 8388608,
+                        "start_address": 1048576,
                         "load_offset": 0,
                         "assume_pic": true
                     }
@@ -107,10 +108,11 @@ cat <<EOF > ${DIRECT_MANIFEST_FILE}
             "image": {
                 "openhcl": {
                     "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=static_elf OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
-                    "memory_page_count": 245760,
+                    "memory_page_count": 163840,
+                    "memory_page_base": 32768,
                     "uefi": false,
                     "static_elf": {
-                        "start_address": 8388608,
+                        "start_address": 1048576,
                         "load_offset": 0,
                         "assume_pic": true
                     }
