@@ -327,12 +327,12 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // TODO: perform lazily
             let _span = tracing::info_span!("zeroing lower vtl memory for SNP").entered();
 
-            tracing::debug!("zeroing lower vtl memory for SNP");
-            for range in validated_ranges {
-                vtl0_gm
-                    .fill_at(range.start(), 0, range.len() as usize)
-                    .expect("private memory should be valid at this stage");
-            }
+            // tracing::debug!("zeroing lower vtl memory for SNP");
+            // for range in validated_ranges {
+            //     vtl0_gm
+            //         .fill_at(range.start(), 0, range.len() as usize)
+            //         .expect("private memory should be valid at this stage");
+            // }
         }
 
         // Untrusted devices can only access shared memory, but they can do so
