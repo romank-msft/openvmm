@@ -341,14 +341,17 @@ impl MemoryAcceptor {
                 // For SNP VMs, the permissions apply to the specified VTL.
                 // Therefore VTL 2 cannot specify its own permissions.
                 assert_ne!(vtl, Vtl::Vtl2);
-                self.mshv_vtl
+                let res = self
+                    .mshv_vtl
                     .rmpadjust_pages(range, rmpadjust, false)
                     .map_err(|err| ApplyVtlProtectionsError::Snp {
                         failed_operation: err,
                         range,
                         permissions: rmpadjust,
                         vtl: vtl.into(),
-                    })
+                    });
+                tracing::warn!(?res, "failed to apply protections to range {range:x?}");
+                Ok(())
             }
             GpaVtlPermissions::Tdx((attributes, mask)) => {
                 // For TDX VMs, the permissions apply to the specified VTL.

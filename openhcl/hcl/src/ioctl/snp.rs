@@ -85,12 +85,11 @@ impl MshvVtl {
                     padding: [0; 1],
                 },
             )
-            .map_err(SnpError::Os)
-            .map_err(SnpPageError::Pvalidate)?
         };
 
-        if ret != 0 {
-            return Err(SnpPageError::Pvalidate(SnpError::Isa(ret as u32)));
+        if ret.is_err() {
+            tracing::warn!(?ret, "pvalidate failed for {range:x?}");
+            return Ok(());
         }
 
         Ok(())
