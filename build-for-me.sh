@@ -62,9 +62,9 @@ RESOURCES="{
 }"
 echo ${RESOURCES} | jq . > ${RESOURCES_FILE}
 
-## Generate the IGVM manifest file for SNP
-SNP_MANIFEST_FILE="openhcl-x64-snp-dev-direct.json"
-cat <<EOF > ${SNP_MANIFEST_FILE}
+## Generate the IGVM manifest file for SNP with secure AVIC and direct ELF boot
+SNP_SAVIC_MANIFEST_FILE="openhcl-x64-snp-dev-direct-savic.json"
+cat <<EOF > ${SNP_SAVIC_MANIFEST_FILE}
 {
     "guest_arch": "x64",
     "guest_configs": [
@@ -98,7 +98,43 @@ cat <<EOF > ${SNP_MANIFEST_FILE}
 }
 EOF
 
-# Generate the IGVM manifest file for direct ELF boot
+## Generate the IGVM manifest file for SNP with secure AVIC disabled and direct ELF boot
+SNP_MANIFEST_FILE="openhcl-x64-snp-dev-direct.json"
+cat <<EOF > ${SNP_MANIFEST_FILE}
+{
+    "guest_arch": "x64",
+    "guest_configs": [
+        {
+            "guest_svn": 1,
+            "max_vtl": 2,
+            "isolation_type": {
+                "snp": {
+                    "shared_gpa_boundary_bits": 46,
+                    "policy": 196639,
+                    "enable_debug": true,
+                    "injection_type": "normal",
+                    "secure_avic": "disabled"
+                }
+            },
+            "image": {
+                "openhcl": {
+                    "command_line": "OPENHCL_FORCE_LOAD_VTL0_IMAGE=static_elf OPENHCL_BOOT_LOG=com3 OPENHCL_SIGNAL_VTL0_STARTED=1",
+                    "memory_page_count": 163840,
+                    "memory_page_base": 32768,
+                    "uefi": false,
+                    "static_elf": {
+                        "start_address": 8388608,
+                        "load_offset": 0,
+                        "assume_pic": true
+                    }
+                }
+            }
+        }
+   ]
+}
+EOF
+
+## Generate the IGVM manifest file for direct ELF boot
 DIRECT_MANIFEST_FILE="openhcl-x64-direct.json"
 cat <<EOF > ${DIRECT_MANIFEST_FILE}
 {
@@ -127,5 +163,6 @@ EOF
 
 # Combine everything into a IGVM images
 
+cargo run -p igvmfilegen -- manifest -m ${SNP_SAVIC_MANIFEST_FILE} -r ${RESOURCES_FILE} -o openhcl-x64-snp-dev-direct-savic.igvm
 cargo run -p igvmfilegen -- manifest -m ${SNP_MANIFEST_FILE} -r ${RESOURCES_FILE} -o openhcl-x64-snp-dev-direct.igvm
 cargo run -p igvmfilegen -- manifest -m ${DIRECT_MANIFEST_FILE} -r ${RESOURCES_FILE} -o openhcl-x64-dev-direct.igvm

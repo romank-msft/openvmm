@@ -37,7 +37,7 @@ pub fn enable_x2apic(t: TestContext<'_>) {
     );
 }
 
-enum ApicMode {
+pub enum ApicMode {
     XApic(u32),
     X2Apic,
 }
@@ -103,19 +103,19 @@ impl ApicMode {
     }
 }
 
-fn self_ipi_x2apic(t: TestContext<'_>) {
+pub fn self_ipi_x2apic(t: TestContext<'_>) {
     self_ipi(t, ApicMode::X2Apic);
 }
 
-fn self_ipi_xapic(t: TestContext<'_>) {
+pub fn self_ipi_xapic(t: TestContext<'_>) {
     self_ipi(t, ApicMode::XApic(APIC_BASE_ADDRESS));
 }
 
-fn self_ipi_xapic_moved(t: TestContext<'_>) {
+pub fn self_ipi_xapic_moved(t: TestContext<'_>) {
     self_ipi(t, ApicMode::XApic(APIC_BASE_ADDRESS + 0x1000));
 }
 
-fn self_ipi(t: TestContext<'_>, apic: ApicMode) {
+pub fn self_ipi(t: TestContext<'_>, apic: ApicMode) {
     apic.init(t.scope);
 
     let got_interrupt = AtomicBool::new(false);
@@ -164,7 +164,7 @@ fn self_ipi(t: TestContext<'_>, apic: ApicMode) {
     });
 }
 
-fn apic_timer(t: TestContext<'_>) {
+pub fn apic_timer(t: TestContext<'_>) {
     let apic = ApicMode::X2Apic;
     apic.init(t.scope);
 

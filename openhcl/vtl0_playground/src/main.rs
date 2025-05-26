@@ -8,7 +8,10 @@
 // UNSAFETY: Interacting with low level hardware primitives.
 #![expect(unsafe_code)]
 
+use arch::apic::apic_timer;
 use arch::apic::enable_x2apic;
+use arch::apic::self_ipi_x2apic;
+use arch::apic::self_ipi_xapic;
 use arch::scope::Scope;
 use arch::scope::TestContext;
 use arch::snp::Ghcb;
@@ -35,16 +38,26 @@ fn playground_main(paravisor_present: bool, isolation: hvdef::HvPartitionIsolati
         "Starting up VTL0 playground, paravisor_present={paravisor_present}, isolation={isolation:?}"
     );
 
-    let tctx = TestContext {
-        scope: &mut Scope {
-            arch: Scope::arch_init(),
-            _scope: PhantomData,
-            _env: PhantomData,
-        },
-    };
-    enable_x2apic(tctx);
+    let tests: &[(fn(TestContext<'_>), &'static str)] = &[
+        (enable_x2apic, "enable_x2apic"),
+        (self_ipi_x2apic, "self_ipi_x2apic"),
+        (self_ipi_xapic, "self_ipi_xapic"),
+        (apic_timer, "apic_time"),
+    ];
 
-    log!("Still running");
+    for test in tests {
+        let (test_func, test_name) = test;
+        log!("Running test \"{test_name}\"");
+        test_func(TestContext {
+            scope: &mut Scope {
+                arch: Scope::arch_init(),
+                _scope: PhantomData,
+                _env: PhantomData,
+            },
+        });
+    }
+    log!("Still running, line {}", line!());
+
     unsafe { asm!("4: sti; hlt; cli; jmp 4b") };
 
     verify_stack_cookie();
