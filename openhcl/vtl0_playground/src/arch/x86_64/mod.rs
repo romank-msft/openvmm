@@ -5,7 +5,9 @@
 
 //! x86_64 architecture-specific implementations.
 
+pub mod apic;
 pub mod com_port;
+pub mod scope;
 pub mod snp;
 
 // Entry point.
@@ -15,6 +17,7 @@ core::arch::global_asm! {
     relocate = sym minimal_rt::reloc::relocate,
     start = sym crate::rt::start,
     stack = sym crate::rt::STACK,
+    arch_init = sym scope::arch_init,
     STACK_COOKIE = const crate::rt::STACK_COOKIE,
     STACK_SIZE = const crate::rt::STACK_SIZE,
 }

@@ -30,6 +30,7 @@ _start:
     lea     rdi, __ehdr_start[rip]                  // The mapped base of the image, rip-relative
     mov     rsi, rdi                                // The virtual address of the image
     call    {relocate}                              // call relocate to fixup relocation entries
+    call    {arch_init}                             // call arch_init to initialize architecture-specific state
     pop     rdi                                     // restore rdi (arg 0) to call start
     mov     rsi, [rsp]                              // restore rsi (arg 1) to call start (leave on stack to align)
     jmp     {start}                                 // jump to start

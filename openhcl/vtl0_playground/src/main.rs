@@ -8,8 +8,12 @@
 // UNSAFETY: Interacting with low level hardware primitives.
 #![expect(unsafe_code)]
 
+use arch::apic::enable_x2apic;
+use arch::scope::Scope;
+use arch::scope::TestContext;
 use arch::snp::Ghcb;
 use core::arch::asm;
+use core::marker::PhantomData;
 use rt::verify_stack_cookie;
 
 mod arch;
@@ -31,6 +35,16 @@ fn playground_main(paravisor_present: bool, isolation: hvdef::HvPartitionIsolati
         "Starting up VTL0 playground, paravisor_present={paravisor_present}, isolation={isolation:?}"
     );
 
+    let tctx = TestContext {
+        scope: &mut Scope {
+            arch: Scope::arch_init(),
+            _scope: PhantomData,
+            _env: PhantomData,
+        },
+    };
+    enable_x2apic(tctx);
+
+    log!("Still running");
     unsafe { asm!("4: sti; hlt; cli; jmp 4b") };
 
     verify_stack_cookie();
