@@ -9,6 +9,7 @@
 #![expect(unsafe_code)]
 
 use arch::snp::Ghcb;
+use core::arch::asm;
 use rt::verify_stack_cookie;
 
 mod arch;
@@ -29,6 +30,8 @@ fn playground_main(paravisor_present: bool, isolation: hvdef::HvPartitionIsolati
     log!(
         "Starting up VTL0 playground, paravisor_present={paravisor_present}, isolation={isolation:?}"
     );
+
+    unsafe { asm!("4: sti; hlt; cli; jmp 4b") };
 
     verify_stack_cookie();
     match isolation {

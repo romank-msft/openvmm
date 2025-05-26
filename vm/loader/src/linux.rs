@@ -9,6 +9,7 @@ use crate::importer::Aarch64Register;
 use crate::importer::BootPageAcceptance;
 use crate::importer::GuestArch;
 use crate::importer::ImageLoad;
+use crate::importer::IsolationType;
 use crate::importer::X86Register;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
@@ -339,7 +340,8 @@ where
     .map_err(Error::ElfLoader)?;
     tracing::trace!(min_addr, next_addr, entrypoint, "loaded static elf");
 
-    let isolation_config = importer.isolation_config();
+    let isol_config = importer.isolation_config();
+
     let image_gpa_base: u64 = min_addr;
     let page_table_gpa_base: u64 = next_addr;
     let image_page_count = align_up_to_page_size(next_addr - min_addr) / HV_PAGE_SIZE;
@@ -405,11 +407,15 @@ where
     import_reg(X86Register::Rip(entrypoint))?;
     tracing::info!("static elf entrypoint: {entrypoint:x?}");
 
-    // Set R8-R11 to the hypervisor isolation CPUID leaf values.
-    let isolation_cpuid = isolation_config.get_cpuid();
-
     import_reg(X86Register::Rsi(
-        (isolation_cpuid.eax as u64) | ((isolation_cpuid.ebx as u64) << 32),
+        (isol_config.paravisor_present as u64)
+            | ((match isol_config.isolation_type {
+                IsolationType::None => 0,
+                IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS.0 as _,
+                IsolationType::Snp => hvdef::HvPartitionIsolationType::SNP.0 as _,
+                IsolationType::Tdx => hvdef::HvPartitionIsolationType::TDX.0 as _,
+            } as u64)
+                << 32),
     ))?;
 
     Ok(StaticElfLoadInfo {
