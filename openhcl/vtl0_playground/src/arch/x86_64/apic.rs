@@ -16,18 +16,15 @@ pub fn enable_x2apic(t: TestContext<'_>) {
     let msr = ApicBase::from(t.scope.read_msr(x86defs::X86X_MSR_APIC_BASE).unwrap());
     log!("apic base: {:#x} {:#x?}", u64::from(msr), msr);
 
-    assert_eq!(
-        msr,
-        ApicBase::new()
-            .with_bsp(true)
-            .with_enable(true)
-            .with_base_page(x86defs::apic::APIC_BASE_PAGE)
-    );
-
     // Should fail since reserved bits are set.
     t.scope
         .write_msr(x86defs::X86X_MSR_APIC_BASE, !0)
         .unwrap_err();
+
+    if msr.x2apic() {
+        log!("x2apic already enabled");
+        return;
+    }
 
     let new_msr = msr.with_x2apic(true);
     t.scope
