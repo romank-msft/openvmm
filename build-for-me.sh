@@ -39,7 +39,7 @@ touch ${OPENHCL_KERNEL_BUILD_INFO}
 VTL0_KERNEL_BUILD=release
 VTL0_KERNEL="target/x86_64-unknown-none/${VTL0_KERNEL_BUILD}/vtl0_playground"
 cargo build -p vtl0_playground --config openhcl/minimal_rt/x86_64-config.toml --${VTL0_KERNEL_BUILD}
-cargo run -p tmk_vmm -- --tmk ${VTL0_KERNEL} --list
+# cargo run -p tmk_vmm -- --tmk ${VTL0_KERNEL} --list
 
 # Generate the JSON files
 

@@ -5,7 +5,8 @@
 
 //! x86_64 architecture-specific implementations.
 
-pub mod com1;
+pub mod com_port;
+pub mod snp;
 
 // Entry point.
 #[cfg(minimal_rt)]

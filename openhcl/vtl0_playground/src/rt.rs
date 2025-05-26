@@ -39,8 +39,11 @@ pub fn verify_stack_cookie() {
 /// The caller must ensure that the passed shim_params_offset is the correct offset
 /// from the shim base to the shim parameters.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
-pub unsafe extern "C" fn start() -> ! {
-    crate::playground_main()
+pub unsafe extern "C" fn start(paravisor_config: u64) -> ! {
+    crate::playground_main(
+        paravisor_config as u32 != 0,
+        hvdef::HvPartitionIsolationType((paravisor_config >> 32) as u8),
+    );
 }
 
 #[cfg(minimal_rt)]

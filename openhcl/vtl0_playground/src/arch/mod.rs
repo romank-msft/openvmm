@@ -3,8 +3,8 @@
 
 //! Imports and re-exports architecture-specific implementations.
 
-mod aarch64;
-mod x86_64;
+pub mod aarch64;
+pub mod x86_64;
 
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] {

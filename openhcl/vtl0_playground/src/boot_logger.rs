@@ -4,24 +4,22 @@
 //! Logging support, no TDX
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::com1::InstrIoAccess;
+use crate::arch::com_port::InstrIoAccess;
 #[cfg(target_arch = "x86_64")]
-use crate::arch::com1::Serial;
+use crate::arch::snp::SnpIoAccess;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::x86_64::com_port::Serial;
 #[cfg(target_arch = "x86_64")]
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;
 use core::fmt::Write;
 
-/// The logging type to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoggerType {
-    Serial,
-}
-
 enum Logger {
     #[cfg(target_arch = "x86_64")]
     Serial(Serial<InstrIoAccess>),
+    #[cfg(target_arch = "x86_64")]
+    SnpSerial(Serial<SnpIoAccess>),
     #[cfg(target_arch = "aarch64")]
     Serial(Serial),
     None,
@@ -31,6 +29,7 @@ impl Logger {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         match self {
             Logger::Serial(serial) => serial.write_str(s),
+            Logger::SnpSerial(serial) => serial.write_str(s),
             Logger::None => Ok(()),
         }
     }
@@ -45,12 +44,22 @@ pub static BOOT_LOGGER: BootLogger = BootLogger {
 };
 
 /// Initialize the boot logger. This replaces any previous init calls.
-pub fn boot_logger_init() {
+pub fn boot_logger_init(isolation: hvdef::HvPartitionIsolationType) {
     let mut logger = BOOT_LOGGER.logger.borrow_mut();
 
     #[cfg(target_arch = "x86_64")]
     {
-        *logger = Logger::Serial(Serial::init(InstrIoAccess));
+        match isolation {
+            hvdef::HvPartitionIsolationType::NONE | hvdef::HvPartitionIsolationType::VBS => {
+                *logger = Logger::Serial(Serial::init(InstrIoAccess));
+            }
+            hvdef::HvPartitionIsolationType::SNP => {
+                *logger = Logger::SnpSerial(Serial::init(SnpIoAccess));
+            }
+            _ => {
+                *logger = Logger::None;
+            }
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -65,11 +74,7 @@ impl Write for &BootLogger {
     }
 }
 
-/// Log a message. These messages are always emitted regardless of debug or
-/// release, if a corresponding logger was configured.
-///
-/// If you want to log something just for local debugging, use [`debug_log!`]
-/// instead.
+/// Log a message to the boot logger.
 #[macro_export]
 macro_rules! log {
     () => {};
@@ -80,5 +85,4 @@ macro_rules! log {
         }
     };
 }
-
-pub(crate) use log;
+pub use log;

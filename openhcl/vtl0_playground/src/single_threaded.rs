@@ -8,6 +8,8 @@
 //! references to the same global. These types provide abstractions for doing
 //! this safely.
 
+#![allow(dead_code)]
+
 use core::cell::Cell;
 use core::cell::UnsafeCell;
 use core::ops::Deref;
@@ -88,32 +90,3 @@ impl<T> DerefMut for OffStackRef<'_, T> {
         self.0
     }
 }
-
-/// Returns a mutable reference to a value that is stored as a global `static`
-/// variable rather than exist on the stack.
-///
-/// This is useful for working with large objects that don't fit on the stack.
-/// It is an alternative to using [`SingleThreaded`] with
-/// [`RefCell`](core::cell::RefCell); `RefCell` has the disadvantage of putting
-/// an extra `bool` next to the value in memory, which can waste a lot of space
-/// for heavily-aligned objects.
-///
-/// Panics if this function is called recursively, since this would attempt to
-/// create multiple mutable references to the same global variable.
-///
-/// This only works in a single-threaded environment.
-macro_rules! off_stack {
-    ($ty:ty, $val:expr) => {{
-        use core::cell::Cell;
-        use core::cell::UnsafeCell;
-        use $crate::single_threaded::OffStackRef;
-        use $crate::single_threaded::SingleThreaded;
-
-        static VALUE: SingleThreaded<UnsafeCell<$ty>> = SingleThreaded(UnsafeCell::new($val));
-        static USED: SingleThreaded<Cell<bool>> = SingleThreaded(Cell::new(false));
-
-        // SAFETY: `USED` is always used to track the usage of `VALUE`.
-        unsafe { OffStackRef::new_internal(&VALUE.0, &USED.0) }
-    }};
-}
-pub(crate) use off_stack;

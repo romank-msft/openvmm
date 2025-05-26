@@ -304,7 +304,7 @@ where
 }
 
 /// Load only a Static ELF to VTL0 on x86_64.
-/// This does not setup register state or any other config information.
+/// Some of the isolation config is passed in RSI and RDI.
 ///
 /// # Arguments
 ///
@@ -408,10 +408,9 @@ where
     // Set R8-R11 to the hypervisor isolation CPUID leaf values.
     let isolation_cpuid = isolation_config.get_cpuid();
 
-    import_reg(X86Register::R8(isolation_cpuid.eax as u64))?;
-    import_reg(X86Register::R9(isolation_cpuid.ebx as u64))?;
-    import_reg(X86Register::R10(isolation_cpuid.ecx as u64))?;
-    import_reg(X86Register::R11(isolation_cpuid.edx as u64))?;
+    import_reg(X86Register::Rsi(
+        (isolation_cpuid.eax as u64) | ((isolation_cpuid.ebx as u64) << 32),
+    ))?;
 
     Ok(StaticElfLoadInfo {
         gpa: min_addr,

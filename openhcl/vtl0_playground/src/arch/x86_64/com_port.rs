@@ -93,11 +93,6 @@ impl<T: IoAccess> Serial<T> {
         Self { io }
     }
 
-    /// Create an instance without calling init.
-    pub fn new(io: T) -> Self {
-        Self { io }
-    }
-
     fn write_byte(&self, b: u8) {
         // SAFETY: Reading and writing text to the serial device is safe.
         unsafe {
