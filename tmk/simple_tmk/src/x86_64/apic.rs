@@ -150,6 +150,8 @@ fn self_ipi(t: TestContext<'_>, apic: ApicMode) {
         let irr = apic.read(s, x86defs::apic::ApicRegister::IRR4);
         assert_eq!(irr, 1);
 
+        s.set_priority(8);
+        apic.write(s, x86defs::apic::ApicRegister::TPR, 9);
         s.enable_interrupts();
         assert!(got_interrupt.load(Relaxed));
 

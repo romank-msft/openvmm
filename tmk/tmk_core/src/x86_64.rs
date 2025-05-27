@@ -319,6 +319,7 @@ impl<'scope> Scope<'scope, '_> {
         } else {
             disable_interrupts();
         }
+        self.set_priority(0);
     }
 
     fn set_idt(&mut self) {
@@ -413,6 +414,13 @@ impl<'scope> Scope<'scope, '_> {
     /// Reverts when the scope ends.
     pub fn disable_interrupts(&self) -> bool {
         disable_interrupts()
+    }
+
+    pub fn set_priority(&mut self, priority: u64) {
+        // SAFETY: setting the priority is safe.
+        unsafe {
+            core::arch::asm!("mov cr8, {}", in(reg) priority);
+        }
     }
 }
 
