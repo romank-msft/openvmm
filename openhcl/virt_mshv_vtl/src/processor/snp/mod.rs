@@ -1302,6 +1302,10 @@ impl UhProcessor<'_, SnpBacked> {
             tracelimit::warn_ratelimited!(CVM_ALLOWED, "halting VTL 1, which might halt the guest");
         }
 
+        let offload_flags = hcl_intr_offload_flags::new()
+            .with_offload_intr_inject(self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr());
+        *self.runner.offload_flags_mut() = offload_flags;
+
         self.runner.set_halted(halt);
 
         self.runner.set_exit_vtl(next_vtl);
