@@ -573,6 +573,9 @@ impl BackingPrivate for SnpBacked {
         vtl: GuestVtl,
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
+        // TODO: If the APIC is offloaded, we need to process the IRRs
+        // from the offloaded page.
+
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
@@ -1320,20 +1323,18 @@ impl UhProcessor<'_, SnpBacked> {
             // length in this case so it's impossible to directly re-inject a software event if
             // delivery generates an intercept.
             //
+            // The exit interrupt information may not be valid for secure AVIC exits.
+            //
             // TODO SNP: Handle ICEBP.
             let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-            // debug_assert!(
-            //     exit_int_info.valid(),
-            //     "event inject info should be valid {exit_int_info:x?}"
-            // );
-
-            let inject = match exit_int_info.interruption_type() {
-                x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
-                    exit_int_info.vector() != 3 && exit_int_info.vector() != 4
-                }
-                x86defs::snp::SEV_INTR_TYPE_SW => false,
-                _ => true,
-            };
+            let inject = exit_int_info.valid()
+                && match exit_int_info.interruption_type() {
+                    x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
+                        exit_int_info.vector() != 3 && exit_int_info.vector() != 4
+                    }
+                    x86defs::snp::SEV_INTR_TYPE_SW => false,
+                    _ => true,
+                };
 
             if inject {
                 vmsa.set_event_inject(exit_int_info);
@@ -1345,6 +1346,8 @@ impl UhProcessor<'_, SnpBacked> {
             self.backing.general_stats[entered_from_vtl]
                 .int_ack
                 .increment();
+            // TODO: Account for the offloaded state.
+
             // The guest has acknowledged the interrupt.
             self.backing.cvm.lapics[entered_from_vtl]
                 .lapic
