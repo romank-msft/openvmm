@@ -1982,7 +1982,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // By default block all (i.e. set all), and only allow (unset) given vectors from `irr_filter`.
         for (filter, irr) in proxy_irr_blocked.iter_mut().zip(irr_filter.iter()) {
             filter.store(!irr, Ordering::Relaxed);
-            tracing::debug!(irr, "update_proxy_irr_filter");
+            tracing::info!(irr, "update_proxy_irr_filter");
         }
     }
 
@@ -2530,7 +2530,7 @@ impl Hcl {
         sint: u8,
         message: &HvMessage,
     ) -> Result<(), HvError> {
-        tracing::trace!(vp, sint, "posting message");
+        tracing::info!(vp, sint, "posting message direct");
 
         let post_message = hvdef::hypercall::PostMessageDirect {
             partition_id: HV_PARTITION_ID_SELF,

@@ -461,6 +461,9 @@ impl LocalApicSet {
         auto_eoi: bool,
         wake: impl FnOnce(VpIndex),
     ) {
+        if vector != 0x40 {
+            tracing::info!(?vp_index, ?vector, ?auto_eoi, "synic interrupt");
+        }
         let mutable = self.global.mutable.read();
         if let Some(slot) = mutable
             .by_index
@@ -1337,6 +1340,11 @@ impl LocalApic {
 
     /// Fast path for updating IRR on the local processor.
     pub fn request_fixed_interrupts(&mut self, mut irr: [u32; 8]) {
+        tracing::debug!(
+            vp = self.shared.vp_index.index(),
+            ?irr,
+            "request fixed interrupts"
+        );
         if self.hardware_enabled() && self.software_enabled() {
             // Don't allow setting invalid bits.
             irr[0] &= !0xffff;
@@ -1417,24 +1425,41 @@ impl LocalApic {
     }
 
     fn hardware_enabled(&self) -> bool {
-        ApicBase::from(self.apic_base).enable()
+        let e = ApicBase::from(self.apic_base).enable();
+        tracing::debug!(vp = self.shared.vp_index.index(), apic_base = ?self.apic_base, enabled = e, "hardware enabled");
+        e
     }
 
     fn xapic_enabled(&self) -> bool {
-        self.hardware_enabled() && !self.x2apic_enabled()
+        let e = self.hardware_enabled() && !self.x2apic_enabled();
+        tracing::debug!(
+            vp = self.shared.vp_index.index(),
+            xapic = e,
+            "xapic enabled"
+        );
+        e
     }
 
     /// X2APIC is enabled on this local APIC
     pub fn x2apic_enabled(&self) -> bool {
-        ApicBase::from(self.apic_base).x2apic()
+        let e = ApicBase::from(self.apic_base).x2apic();
+        tracing::debug!(
+            vp = self.shared.vp_index.index(),
+            x2apic = e,
+            "x2apic enabled"
+        );
+        e
     }
 
     fn software_enabled(&self) -> bool {
-        Svr::from(self.svr).enable()
+        let svr = Svr::from(self.svr).enable();
+        tracing::debug!(vp = self.shared.vp_index.index(), ?svr, "software enabled");
+        svr
     }
 
     /// Sets the masked bit in an LVT if the APIC is software disabled.
     fn effective_lvt(&self, lvt: u32) -> u32 {
+        tracing::debug!(vp = self.shared.vp_index.index(), ?lvt, "effective lvt");
         let mut lvt = Lvt::from(lvt);
         if !self.software_enabled() {
             lvt.set_masked(true);
@@ -1444,6 +1469,7 @@ impl LocalApic {
 
     /// Scans for pending interrupts.
     pub fn scan(&mut self, vmtime: &mut VmTimeAccess, scan_irr: bool) -> ApicWork {
+        tracing::debug!(vp = self.shared.vp_index.index(), "scan apic");
         if !self.hardware_enabled() {
             return Default::default();
         }
@@ -1467,6 +1493,15 @@ impl LocalApic {
             r.interrupt = self.next_irr();
         }
 
+        if self.next_irr.is_some() && self.next_irr != Some(0x40) && self.next_irr != Some(0x41) {
+            tracing::info!(
+                ?self.irr,
+                ?self.isr,
+                ?self.tmr,
+                ?self.next_irr,
+                "apic scan result"
+            );
+        }
         r
     }
 
@@ -1496,6 +1531,7 @@ impl LocalApic {
         &mut self,
         update: impl FnOnce(&[u32; 8], &[u32; 8], &[u32; 8]),
     ) -> Result<(), OffloadNotSupported> {
+        tracing::info!(vp = self.shared.vp_index.index(), "push apic offload");
         if self.needs_offload_reeval && self.is_offloaded && self.software_enabled() {
             if self.active_auto_eoi {
                 return Err(OffloadNotSupported);
@@ -1511,17 +1547,20 @@ impl LocalApic {
 
     /// Returns whether APIC offload is enabled.
     pub fn is_offloaded(&self) -> bool {
+        tracing::info!(vp = self.shared.vp_index.index(), "is_offloaded");
         self.is_offloaded
     }
 
     /// Returns true if it is safe to set an IRR bit directly in offloaded APIC
     /// state.
     pub fn can_offload_irr(&self) -> bool {
+        tracing::debug!(vp = self.shared.vp_index.index(), "can_offload_irr");
         self.is_offloaded && self.software_enabled()
     }
 
     /// Enables APIC offload.
     pub fn enable_offload(&mut self) {
+        tracing::info!(vp = self.shared.vp_index.index(), "enable apic offload");
         self.is_offloaded = true;
         self.needs_offload_reeval = true;
     }
@@ -1529,6 +1568,7 @@ impl LocalApic {
     /// Disables APIC offload, accumulating IRR and ISR from the offload APIC
     /// page.
     pub fn disable_offload(&mut self, irr: &[u32; 8], isr: &[u32; 8]) {
+        tracing::info!(vp = self.shared.vp_index.index(), "disable apic offload");
         self.accumulate_from_offload(irr, isr);
         self.is_offloaded = false;
     }
@@ -1556,6 +1596,7 @@ impl LocalApic {
     /// This must be called before [`Self::save`] to flush hidden state to
     /// registers.
     pub fn flush(&mut self) -> ApicWork {
+        tracing::debug!(vp = self.shared.vp_index.index(), "flush apic");
         if self.shared.work.load(Ordering::Relaxed) == 0 {
             return Default::default();
         }
@@ -1584,6 +1625,13 @@ impl LocalApic {
 
     /// Acknowledges the interrupt returned by `scan`.
     pub fn acknowledge_interrupt(&mut self, vector: u8) {
+        if vector != 0x40 {
+            tracing::info!(
+                vp = self.shared.vp_index.index(),
+                vector,
+                "acknowledge apic interrupt"
+            );
+        }
         assert!(!self.is_offloaded);
         assert_eq!(Some(vector), self.next_irr);
         let (bank, mask) = bank_mask(vector);
@@ -1598,6 +1646,7 @@ impl LocalApic {
     /// Returns whether an EOI is pending that can be completed lazily, without
     /// intercepting the VP.
     pub fn is_lazy_eoi_pending(&self) -> bool {
+        tracing::debug!(vp = self.shared.vp_index.index(), "is lazy eoi pending");
         if self.is_offloaded {
             return false;
         }
@@ -1696,6 +1745,7 @@ impl LocalApic {
 
     /// Resets the APIC state.
     pub fn reset(&mut self) {
+        tracing::info!(vp = self.shared.vp_index.index(), "reset apic");
         assert!(!self.is_offloaded);
 
         self.apic_base = ApicBase::new()
@@ -1801,6 +1851,7 @@ impl LocalApic {
     /// Returns the APIC register state.
     pub fn save(&mut self) -> virt::x86::vp::Apic {
         assert!(!self.is_offloaded, "failed to disable offload before save");
+        tracing::info!(vp = self.shared.vp_index.index(), "save apic state");
 
         // Ensure any pending interrupt requests have been pulled into the local
         // state.
@@ -1854,6 +1905,7 @@ impl LocalApic {
     /// Restores the APIC register state.
     pub fn restore(&mut self, state: &virt::x86::vp::Apic) -> Result<(), InvalidApicBase> {
         assert!(!self.is_offloaded);
+        tracing::info!(vp = self.shared.vp_index.index(), "restore apic state");
 
         let virt::x86::vp::Apic {
             apic_base,
