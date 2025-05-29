@@ -97,6 +97,7 @@ impl MessageQueues {
         sints: u16,
         mut post_message: impl FnMut(u8, &HvMessage) -> Result<(), HvError>,
     ) -> u16 {
+        tracing::info!(sints = ?sints, "posting pending messages");
         for (sint_index, queue) in self.queues.lock().iter_mut().enumerate() {
             let sint = sint_index as u8;
             let mask = 1 << sint;
@@ -108,10 +109,10 @@ impl MessageQueues {
             while let Some(message) = queue.front() {
                 match post_message(sint, message) {
                     Ok(()) => {
-                        tracing::debug!(sint, "posted sint message");
+                        tracing::info!(sint, "posted sint message");
                     }
                     Err(HvError::ObjectInUse) => {
-                        tracing::debug!(sint, "message slot in use");
+                        tracing::info!(sint, "message slot in use");
                         self.pending.fetch_or(mask, Ordering::Relaxed);
                         break;
                     }

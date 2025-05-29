@@ -431,6 +431,7 @@ impl ProcessorSynic {
         message: &HvMessage,
         interrupt: &mut dyn RequestInterrupt,
     ) -> Result<(), HvError> {
+        tracing::info!(sint_index, "posting message to SINT");
         let sint = &self.sints.sint[sint_index as usize];
         if sint.masked() || sint.proxy() {
             return Err(HvError::InvalidSynicState);
@@ -550,6 +551,7 @@ impl ProcessorSynic {
 
     /// Writes a non-synthetic-timer x64 MSR.
     pub fn write_nontimer_msr(&mut self, msr: u32, v: u64) -> Result<(), MsrError> {
+        tracing::info!("writing synic MSR {:#x} = {:#x}", msr, v);
         match msr {
             hvdef::HV_X64_MSR_SCONTROL => self.set_scontrol(v),
             hvdef::HV_X64_MSR_SVERSION => return Err(MsrError::InvalidAccess),

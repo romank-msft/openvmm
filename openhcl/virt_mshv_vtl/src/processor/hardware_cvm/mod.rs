@@ -1530,6 +1530,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             && !matches!(r, Err(MsrError::Unknown))
             && matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15)
         {
+            tracing::info!(
+                "Updating proxy_irr_blocked for vtl {:?} after writing MSR {:#x}",
+                vtl,
+                msr
+            );
             self.update_proxy_irr_filter(vtl);
         }
         r
@@ -2385,6 +2390,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
                 if proxied_sints & (1 << sint) != 0 {
+                    tracing::info!(
+                        vp_index = self.inner.vp_info.base.vp_index.index(),
+                        ?vtl,
+                        ?sint,
+                        "Posting proxied SINT {} message to VTL {:?}",
+                        sint,
+                        vtl
+                    );
                     if let Some(synic) = self.backing.untrusted_synic_mut() {
                         synic.post_message(
                             sint,
@@ -2401,6 +2414,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         )
                     }
                 } else {
+                    tracing::info!("CVM posting SINT {} message to VTL {:?}", sint, vtl);
                     self.backing.cvm_state_mut().hv[vtl].synic.post_message(
                         sint,
                         message,

@@ -26,6 +26,7 @@ use crate::WakeReason;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use hcl::protocol::hcl_intr_offload_flags;
 use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -592,7 +593,7 @@ impl BackingPrivate for SnpBacked {
             return;
         }
         let notifications = HvDeliverabilityNotificationsRegister::new().with_sints(sints);
-        tracing::trace!(?notifications, "setting notifications");
+        tracing::info!(?notifications, "setting notifications");
         this.runner
             .set_vp_register(
                 GuestVtl::Vtl0,
@@ -656,6 +657,7 @@ impl BackingPrivate for SnpBacked {
         first_scan_irr: &mut bool,
         dev: &impl CpuIo,
     ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        tracing::debug!(?scan_irr, ?first_scan_irr, "processing interrupts");
         this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
@@ -782,10 +784,13 @@ struct SnpApicClient<'a, T> {
 
 impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     fn cr8(&mut self) -> u32 {
-        self.vmsa.v_intr_cntrl().tpr().into()
+        let cr8 = self.vmsa.v_intr_cntrl().tpr().into();
+        tracing::info!(?self.vtl, "reading cr8, cr8={:#x}", cr8);
+        cr8
     }
 
     fn set_cr8(&mut self, value: u32) {
+        tracing::info!(?self.vtl, ?value, "setting cr8");
         self.vmsa.v_intr_cntrl_mut().set_tpr(value as u8);
     }
 
@@ -794,10 +799,12 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     }
 
     fn wake(&mut self, vp_index: VpIndex) {
+        tracing::info!(?self.vtl, ?vp_index, "waking up VP");
         self.partition.vps[vp_index.index() as usize].wake(self.vtl, WakeReason::INTCON);
     }
 
     fn eoi(&mut self, vector: u8) {
+        tracing::info!(?self.vtl, ?vector, "EOI for vector");
         debug_assert_eq!(self.vtl, GuestVtl::Vtl0);
         self.dev.handle_eoi(vector.into())
     }
@@ -807,6 +814,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
+        tracing::info!(?self.vtl, "pulling APIC offload");
         assert_eq!(self.vtl, GuestVtl::Vtl0);
         pull_apic_offload(self.avic_page)
     }
@@ -824,6 +832,7 @@ fn pull_apic_offload(page: &mut SevAvicPage) -> ([u32; 8], [u32; 8]) {
         *irr = std::mem::take(&mut page_irr.value);
         *isr = std::mem::take(&mut page_isr.value);
     }
+    tracing::info!(?irr, ?isr, "pulled APIC offload");
     (irr, isr)
 }
 
@@ -953,6 +962,11 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
 
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError> {
         let mut vmsa = self.runner.vmsa_mut(vtl);
+
+        if vector != 0x40 && vector != 0x41 {
+            tracing::info!(?vtl, ?vector, "injecting interrupt");
+        }
+
         vmsa.v_intr_cntrl_mut().set_vector(vector);
         vmsa.v_intr_cntrl_mut().set_priority((vector >> 4).into());
         vmsa.v_intr_cntrl_mut().set_ignore_tpr(false);
@@ -1107,6 +1121,10 @@ impl UhProcessor<'_, SnpBacked> {
         is_write: bool,
         is_fault: bool,
     ) {
+        // Noisy MSRs: Hyperv timers, APIC base and APIC EOI
+        if (msr >> 4 != 0x4000002) && (msr >> 4 != 0x400000b) && msr != 0x1b && msr != 0x80b {
+            tracing::info!(?msr, ?is_write, ?is_fault, "handling MSR access");
+        }
         if is_write && self.cvm_try_protect_msr_write(entered_from_vtl, msr) {
             return;
         }
@@ -1132,7 +1150,7 @@ impl UhProcessor<'_, SnpBacked> {
             match r {
                 Ok(()) => false,
                 Err(MsrError::Unknown) => {
-                    tracing::debug!(msr, value, "unknown cvm msr write");
+                    tracing::warn!(msr, value, "unknown cvm msr write");
                     false
                 }
                 Err(MsrError::InvalidAccess) => true,
@@ -1155,7 +1173,7 @@ impl UhProcessor<'_, SnpBacked> {
             let value = match r {
                 Ok(v) => Some(v),
                 Err(MsrError::Unknown) => {
-                    tracing::debug!(msr, "unknown cvm msr read");
+                    tracing::warn!(msr, "unknown cvm msr read");
                     Some(0)
                 }
                 Err(MsrError::InvalidAccess) => None,
@@ -1312,6 +1330,34 @@ impl UhProcessor<'_, SnpBacked> {
         let entered_from_vtl = next_vtl;
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
+        let noisy_irqs = (vmsa.guest_error_code() == SevExitCode::INTR.0)
+            && (vmsa.v_intr_cntrl().vector() == 0x40 || vmsa.v_intr_cntrl().vector() == 0x41);
+        let noisy_msrs = (vmsa.guest_error_code() == SevExitCode::MSR.0)
+            && (((vmsa.rcx() as u32) >> 4 == 0x4000002) // hyperv timers
+               || ((vmsa.rcx() as u32) >> 4 == 0x400000b) // hyperv timers
+               || ((vmsa.rcx() as u32) == 0x80b) // x2apic eoi
+               || ((vmsa.rcx() as u32) == 0x1b)); // apic base register
+        if (vmsa.guest_error_code() != SevExitCode::IOIO.0)
+            && (vmsa.guest_error_code() != SevExitCode::NPF.0)
+            && (vmsa.guest_error_code() != SevExitCode::CPUID.0)
+            && (vmsa.guest_error_code() != SevExitCode::IDLE_HLT.0)
+            && !noisy_irqs
+            && !noisy_msrs
+        {
+            let sev_error_code = SevExitCode(vmsa.guest_error_code());
+            tracing::info!(?sev_error_code, ?entered_from_vtl, "processing exit");
+            let interrupt_info = vmsa.exit_int_info();
+            let interrupt_control = vmsa.v_intr_cntrl();
+            tracing::info!(?interrupt_info, ?interrupt_control, "exit interrupt info",);
+            if self.backing.cvm.lapics[entered_from_vtl]
+                .lapic
+                .is_offloaded()
+            {
+                let (irr, isr) = pull_apic_offload(avic_page);
+                tracing::info!(?irr, ?isr, "pulled APIC offload");
+            }
+        }
+
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
         if vmsa.v_intr_cntrl().guest_busy() {
             self.backing.general_stats[entered_from_vtl]
@@ -1336,7 +1382,9 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => true,
                 };
 
+            tracing::info!(?exit_int_info, ?inject, "handling event inject",);
             if inject {
+                tracing::info!(?exit_int_info, ?entered_from_vtl, "re-injecting event",);
                 vmsa.set_event_inject(exit_int_info);
             }
         }
@@ -2654,7 +2702,7 @@ impl UhProcessor<'_, SnpBacked> {
                 }
             }
             _ => {
-                tracing::debug!(msr, value, "unknown cvm msr write");
+                tracing::warn!(msr, value, "unknown cvm msr write");
             }
         }
         Ok(())
