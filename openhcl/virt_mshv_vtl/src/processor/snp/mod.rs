@@ -581,7 +581,31 @@ impl BackingPrivate for SnpBacked {
         // Clear any pending interrupt.
         this.runner.vmsa_mut(vtl).v_intr_cntrl_mut().set_irq(false);
 
-        hardware_cvm::apic::poll_apic_core(this, vtl, scan_irr)
+        hardware_cvm::apic::poll_apic_core(this, vtl, scan_irr)?;
+
+        // TODO: a very basic thing that gets us to the UEFI front page.
+        if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
+            match this.backing.cvm.lapics[vtl]
+                .lapic
+                .push_to_offload(|irr, isr, tmr| {
+                    let apic_page = this.runner.secure_avic_page_mut(vtl);
+
+                    for (((irr, page_irr), isr), page_isr) in irr
+                        .iter()
+                        .zip(&mut apic_page.irr)
+                        .zip(isr)
+                        .zip(&mut apic_page.isr)
+                    {
+                        page_irr.value |= *irr;
+                        page_isr.value |= *isr;
+                    }
+                }) {
+                Ok(_) => {}
+                Err(_) => todo!(),
+            }
+        }
+
+        Ok(())
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
