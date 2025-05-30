@@ -831,6 +831,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
 fn pull_apic_offload(page: &mut SevAvicPage) -> ([u32; 8], [u32; 8]) {
     let mut irr = [0; 8];
     let mut isr = [0; 8];
+    let mut log = false;
     for (((irr, page_irr), isr), page_isr) in irr
         .iter_mut()
         .zip(page.irr.iter_mut())
@@ -839,8 +840,13 @@ fn pull_apic_offload(page: &mut SevAvicPage) -> ([u32; 8], [u32; 8]) {
     {
         *irr = std::mem::take(&mut page_irr.value);
         *isr = std::mem::take(&mut page_isr.value);
+        if *irr != 0 || *isr != 0 {
+            log = true;
+        }
     }
-    tracing::info!(?irr, ?isr, "pulled APIC offload");
+    if log {
+        tracing::info!(?irr, ?isr, "pulled APIC offload");
+    }
     (irr, isr)
 }
 
@@ -1343,7 +1349,9 @@ impl UhProcessor<'_, SnpBacked> {
         let (avic_page, mut vmsa) = self.runner.secure_avic_page_vmsa_mut(entered_from_vtl);
 
         let noisy_irqs = (vmsa.guest_error_code() == SevExitCode::INTR.0)
-            && (vmsa.v_intr_cntrl().vector() == 0x40 || vmsa.v_intr_cntrl().vector() == 0x41);
+            && (vmsa.v_intr_cntrl().vector() == 0x40
+                || vmsa.v_intr_cntrl().vector() == 0x41
+                || vmsa.v_intr_cntrl().vector() == 0x0);
         let noisy_msrs = (vmsa.guest_error_code() == SevExitCode::MSR.0)
             && (((vmsa.rcx() as u32) >> 4 == 0x4000002) // hyperv timers
                || ((vmsa.rcx() as u32) >> 4 == 0x400000b) // hyperv timers
