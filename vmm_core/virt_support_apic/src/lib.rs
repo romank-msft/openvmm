@@ -1583,7 +1583,7 @@ impl LocalApic {
 
     /// Returns whether APIC offload is enabled.
     pub fn is_offloaded(&self) -> bool {
-        tracing::info!(vp = self.shared.vp_index.index(), "is_offloaded");
+        tracing::debug!(vp = self.shared.vp_index.index(), "is_offloaded");
         self.is_offloaded
     }
 
