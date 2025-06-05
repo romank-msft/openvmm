@@ -1531,7 +1531,7 @@ impl LocalApic {
         &mut self,
         update: impl FnOnce(&[u32; 8], &[u32; 8], &[u32; 8]),
     ) -> Result<(), OffloadNotSupported> {
-        tracing::info!(vp = self.shared.vp_index.index(), "push apic offload");
+        tracing::debug!(vp = self.shared.vp_index.index(), "push apic offload");
         if self.needs_offload_reeval && self.is_offloaded && self.software_enabled() {
             if self.active_auto_eoi {
                 return Err(OffloadNotSupported);
