@@ -1493,7 +1493,13 @@ impl LocalApic {
             r.interrupt = self.next_irr();
         }
 
-        if self.next_irr.is_some() && self.next_irr != Some(0x40) && self.next_irr != Some(0x41) {
+        if self.next_irr.is_some()
+            && self.next_irr != Some(0x40)
+            && self.next_irr != Some(0x41)
+            && self.next_irr != Some(0xed)
+            && self.next_irr != Some(0xf3)
+            && self.next_irr != Some(0x21)
+        {
             tracing::info!(
                 ?self.irr,
                 ?self.isr,

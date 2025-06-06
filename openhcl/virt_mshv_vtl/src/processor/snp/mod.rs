@@ -1403,7 +1403,7 @@ impl UhProcessor<'_, SnpBacked> {
         }
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
-        if vmsa.v_intr_cntrl().guest_busy() {
+        if vmsa.sev_features().alternate_injection() && vmsa.v_intr_cntrl().guest_busy() {
             self.backing.general_stats[entered_from_vtl]
                 .guest_busy
                 .increment();
