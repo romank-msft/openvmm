@@ -215,6 +215,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
                     .with_vmpl(true)
                     .with_rmp_query(true)
                     .with_tsc_aux_virtualization(true)
+                    .with_secure_avic(true)
                     .into(),
                 cpuid::ExtendedSevFeaturesEbx::new()
                     .with_cbit_position(0x3f)
@@ -435,7 +436,9 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             // compatible with APIC hardware offloads.
             // However, Lazy EOI on SNP is beneficial and requires the
             // Hyper-V MSRs to function. Enable it here always.
-            .with_use_apic_msrs(true)
+            //
+            // TODO: for secure avic?
+            .with_use_apic_msrs(false)
             .with_long_spin_wait_count(!0)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
             .with_use_synthetic_cluster_ipi(true);
