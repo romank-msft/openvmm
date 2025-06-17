@@ -1857,12 +1857,26 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::AVIC_INCOMPLETE_IPI => {
-                // ICR writes with DSH field equal to all including self (10b), all
-                // excluding self (11b), or target will trap.
                 let ipi_info1 = SevAvicIncompleteIpiInfo1::from(vmsa.exit_info1());
                 let ipi_info2 = SevAvicIncompleteIpiInfo2::from(vmsa.exit_info2());
+                let icr = x86defs::apic::Icr::from_bits(vmsa.exit_info1());
 
-                todo!("AVIC incomplete IPI SEV exit: {ipi_info1:x?} {ipi_info2:x?}");
+                tracing::info!(
+                    "AVIC incomplete IPI SEV exit: {ipi_info1:x?} {ipi_info2:x?}, {icr:x?}"
+                );
+
+                // ICR writes with DSH field equal to all including self (10b), all
+                // excluding self (11b), or target will trap.
+                let is_fault =
+                    icr.destination_shorthand() == x86defs::apic::DestinationShorthand::NONE.0;
+                let is_write = true;
+                let msr = X2APIC_MSR_BASE + x86defs::apic::ApicRegister::ICR0.0 as u32;
+
+                // As the ICR is accessed through the `wrmsr` instruction (secure AVIC allows only
+                // the x2 APIC access), we already have `rax` and `rdx` set to the desired value by
+                // the guest.
+                self.handle_msr_access(dev, entered_from_vtl, msr, is_write, is_fault);
+
                 &mut self.backing.exit_stats[entered_from_vtl].avic_incomplete_ipi
             }
 
