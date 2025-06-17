@@ -1865,10 +1865,9 @@ impl UhProcessor<'_, SnpBacked> {
                     "AVIC incomplete IPI SEV exit: {ipi_info1:x?} {ipi_info2:x?}, {icr:x?}"
                 );
 
-                // ICR writes with DSH field equal to all including self (10b), all
-                // excluding self (11b), or target will trap.
-                let is_fault =
-                    icr.destination_shorthand() == x86defs::apic::DestinationShorthand::NONE.0;
+                // This a trap, and the hardware has already advanced the instruction pointer:
+                // "15.36.21.5 Guest APIC Accesses".
+                let is_fault = false;
                 let is_write = true;
                 let msr = X2APIC_MSR_BASE + x86defs::apic::ApicRegister::ICR0.0 as u32;
 
