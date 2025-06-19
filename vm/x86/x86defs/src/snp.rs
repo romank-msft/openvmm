@@ -578,6 +578,19 @@ pub struct SevVmsa {
 
 #[repr(C)]
 #[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC IRR register.
+///
+/// If the UpdateIRR bit is set in the VMCB, the guest-controlled AllowedIRR mask
+/// is logically AND-ed with the host-controlled RequestedIRR and then is logically
+/// OR-ed into the IRR field in the Guest APIC Backing page.
+pub struct SevAvicIrrRegister {
+    pub value: u32,
+    pub allowed: u32,
+    _reserved: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 /// Structure representing the SEV-ES AVIC backing page.
 /// Specification: "AMD64 PPR Vol3 System Programming", 15.29.3  AVIC Backing Page.
 pub struct SevAvicPage {
@@ -595,7 +608,7 @@ pub struct SevAvicPage {
     pub svr: ApicRegister,
     pub isr: [ApicRegister; 8],
     pub tmr: [ApicRegister; 8],
-    pub irr: [ApicRegister; 8],
+    pub irr: [SevAvicIrrRegister; 8],
     pub esr: ApicRegister,
     pub reserved_29: [ApicRegister; 6],
     pub lvt_cmci: ApicRegister,
