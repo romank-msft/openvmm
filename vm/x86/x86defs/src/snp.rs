@@ -137,16 +137,21 @@ pub struct SevVirtualInterruptControl {
     pub irq: bool,
     pub gif: bool,
     pub intr_shadow: bool,
-    #[bits(5)]
+    pub nmi: bool,
+    pub nmi_mask: bool,
+    #[bits(3)]
     _rsvd1: u64,
     #[bits(4)]
     pub priority: u64,
     pub ignore_tpr: bool,
-    #[bits(11)]
+    #[bits(5)]
     _rsvd2: u64,
+    pub nmi_enable: bool,
+    #[bits(5)]
+    _rsvd3: u64,
     pub vector: u8,
     #[bits(23)]
-    _rsvd3: u64,
+    _rsvd4: u64,
     pub guest_busy: bool,
 }
 
