@@ -112,6 +112,7 @@ struct GeneralStats {
 #[derive(Inspect, Default)]
 struct ExitStats {
     automatic_exit: Counter,
+    bus_lock: Counter,
     cpuid: Counter,
     hlt: Counter,
     intr: Counter,
@@ -626,6 +627,17 @@ impl BackingPrivate for SnpBacked {
                 }) {
                 Ok(_) => {}
                 Err(_) => todo!(),
+            }
+
+            // If there is a pending interrupt, clear the halted and idle state.
+            // TODO SNP: There are few other bits to take into account, such as the VintCtrl.GIF
+            // and the RFLAGS.IF ones as well as running in the interrupt shadow.
+            // Shouldn't be of concern for now as the guests account for these.
+            if matches!(
+                this.backing.cvm.lapics[vtl].activity,
+                MpState::Halted | MpState::Idle
+            ) {
+                this.backing.cvm.lapics[vtl].activity = MpState::Running;
             }
         }
 
@@ -1353,20 +1365,32 @@ impl UhProcessor<'_, SnpBacked> {
 
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
-
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
+
+        // If we are halted in the kernel due to hlt or idle, and we receive an interrupt
+        // we'd like to unhalt, inject the interrupt, and resume vtl0 without returning to
+        // user-mode. To enable this, the kernel must know why are are halted
+        let activity = self.backing.cvm.lapics[next_vtl].activity;
+        let kernel_known_state =
+            matches!(activity, MpState::Running | MpState::Halted | MpState::Idle);
+        let halted_other = tlb_halt || !kernel_known_state;
+
+        self.runner.set_halted(halt);
+        self.runner.set_exit_vtl(next_vtl);
 
         if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
             tracelimit::warn_ratelimited!(CVM_ALLOWED, "halting VTL 1, which might halt the guest");
         }
 
+        let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
+        let offload_enabled = self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr();
         let offload_flags = hcl_intr_offload_flags::new()
-            .with_offload_intr_inject(self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr());
+            .with_offload_intr_inject(offload_enabled)
+            .with_offload_x2apic(offload_enabled && x2apic_enabled)
+            .with_halted_other(halted_other)
+            .with_halted_hlt(activity == MpState::Halted)
+            .with_halted_idle(activity == MpState::Idle);
         *self.runner.offload_flags_mut() = offload_flags;
-
-        self.runner.set_halted(halt);
-
-        self.runner.set_exit_vtl(next_vtl);
 
         // Set the lazy EOI bit just before running.
         let lazy_eoi = self.sync_lazy_eoi(next_vtl);
@@ -1695,10 +1719,16 @@ impl UhProcessor<'_, SnpBacked> {
             | SevExitCode::PAUSE
             | SevExitCode::SMI
             | SevExitCode::VMGEXIT
-            | SevExitCode::BUSLOCK
             | SevExitCode::IDLE_HLT => {
                 // Ignore intercept processing if the guest exited due to an automatic exit.
                 &mut self.backing.exit_stats[entered_from_vtl].automatic_exit
+            }
+
+            SevExitCode::BUSLOCK => {
+                // The guest performs a misaligned atomic operation,
+                // or updating A/D bits in the PTEs. Might help in investigating
+                // performance issues.
+                &mut self.backing.exit_stats[entered_from_vtl].bus_lock
             }
 
             SevExitCode::VINTR => {
@@ -2679,8 +2709,7 @@ impl UhProcessor<'_, SnpBacked> {
             | x86defs::X86X_MSR_MCG_STATUS => 0,
 
             hvdef::HV_X64_MSR_GUEST_IDLE => {
-                // TODO: make this wotk with secure AVIC
-                // self.backing.cvm.lapics[vtl].activity = MpState::Idle;
+                self.backing.cvm.lapics[vtl].activity = MpState::Idle;
                 let mut vmsa = self.runner.vmsa_mut(vtl);
                 vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
                 0
