@@ -36,6 +36,8 @@ use hv1_hypercall::HypercallIo;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_X64_MSR_SIEFP;
+use hvdef::HV_X64_MSR_SIMP;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvMessageType;
@@ -1009,14 +1011,15 @@ impl UhProcessor<'_, SnpBacked> {
         entered_from_vtl: GuestVtl,
         msr: u32,
         is_write: bool,
-    ) {
+    ) -> Option<u64> {
+        let mut value = None;
         if is_write && self.cvm_try_protect_msr_write(entered_from_vtl, msr) {
-            return;
+            return value;
         }
 
         let vmsa = self.runner.vmsa_mut(entered_from_vtl);
         let gp = if is_write {
-            let value = (vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32);
+            value = Some((vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32));
 
             let r = self.backing.cvm.lapics[entered_from_vtl]
                 .lapic
@@ -1027,14 +1030,16 @@ impl UhProcessor<'_, SnpBacked> {
                     vmtime: &self.vmtime,
                     vtl: entered_from_vtl,
                 })
-                .msr_write(msr, value)
-                .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
-                .or_else_if_unknown(|| self.write_msr_snp(dev, msr, value, entered_from_vtl));
+                .msr_write(msr, value.unwrap())
+                .or_else_if_unknown(|| self.write_msr_cvm(msr, value.unwrap(), entered_from_vtl))
+                .or_else_if_unknown(|| {
+                    self.write_msr_snp(dev, msr, value.unwrap(), entered_from_vtl)
+                });
 
             match r {
                 Ok(()) => false,
                 Err(MsrError::Unknown) => {
-                    tracing::debug!(msr, value, "unknown cvm msr write");
+                    tracing::debug!(msr, ?value, "unknown cvm msr write");
                     false
                 }
                 Err(MsrError::InvalidAccess) => true,
@@ -1053,7 +1058,7 @@ impl UhProcessor<'_, SnpBacked> {
                 .or_else_if_unknown(|| self.read_msr_cvm(msr, entered_from_vtl))
                 .or_else_if_unknown(|| self.read_msr_snp(dev, msr, entered_from_vtl));
 
-            let value = match r {
+            value = match r {
                 Ok(v) => Some(v),
                 Err(MsrError::Unknown) => {
                     tracing::debug!(msr, "unknown cvm msr read");
@@ -1084,6 +1089,8 @@ impl UhProcessor<'_, SnpBacked> {
         } else {
             advance_to_next_instruction(&mut vmsa);
         }
+
+        value
     }
 
     fn handle_xsetbv(&mut self, entered_from_vtl: GuestVtl) {
@@ -1179,6 +1186,7 @@ impl UhProcessor<'_, SnpBacked> {
     }
 
     async fn run_vp_snp(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let vp_index = self.vp().vp_index();
         let next_vtl = self.backing.cvm.exit_vtl;
 
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
@@ -1211,6 +1219,8 @@ impl UhProcessor<'_, SnpBacked> {
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let rip = vmsa.rip();
+        let next_rip = vmsa.next_rip();
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
         let inject = if vmsa.sev_features().alternate_injection() {
@@ -1304,7 +1314,29 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_write = vmsa.exit_info1() & 1 != 0;
                 let msr = vmsa.rcx() as u32;
 
-                self.handle_msr_access(dev, entered_from_vtl, msr, is_write);
+                let value = self.handle_msr_access(dev, entered_from_vtl, msr, is_write);
+                if msr == HV_X64_MSR_SIMP {
+                    tracing::info!(
+                        "SIMP  {} {:016x}-{:016x} {:?} {:?} : {:016x?}",
+                        if is_write { "WR" } else { "RD" },
+                        rip,
+                        next_rip,
+                        vp_index,
+                        entered_from_vtl,
+                        value
+                    );
+                }
+                if msr == HV_X64_MSR_SIEFP {
+                    tracing::info!(
+                        "SIEFP {} {:016x}-{:016x} {:?} {:?} : {:016x?}",
+                        if is_write { "WR" } else { "RD" },
+                        rip,
+                        next_rip,
+                        vp_index,
+                        entered_from_vtl,
+                        value
+                    );
+                }
 
                 if is_write {
                     &mut self.backing.exit_stats[entered_from_vtl].msr_write
