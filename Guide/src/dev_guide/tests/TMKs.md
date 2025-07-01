@@ -3,7 +3,7 @@
 ## What TMKs are
 
 During the lifetime of a VM, the guest operating system might request services that
-require assitance from the VMM or the hypervisor. In turn, that rests on the correct
+require assistance from the VMM or the hypervisor. In turn, that rests on the correct
 implementation of several concepts like interrupt processing, memory mappings,
 maintaining caches of the (virtual) hardware, etc that are both critical for the normal
 work of the guest OS, and hard to test. That is the case due to the guest OSes not
