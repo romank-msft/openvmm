@@ -5,8 +5,8 @@
 During the lifetime of a VM, the guest operating system might request services that
 require assistance from the VMM or the hypervisor. In turn, that rests on the correct
 implementation of several concepts like interrupt processing, memory mappings,
-maintaining caches of the (virtual) hardware, etc that are both critical for the normal
-work of the guest OS, and hard to test. That is the case due to the guest OSes not
+maintaining caches of the (virtual) hardware, etc. that are both critical for the normal
+work of the guest OS, and are hard to test. That is the case due to the guest OSes not
 allowing or even breaking down should any unexpected interaction happen with these
 low-level building blocks. Let alone it is not very prudent to incorporate a
 test for a VMM or a hypervisor into a guest kernel and release the kernel that way!
@@ -38,12 +38,16 @@ The command lines and other specifics may change as the TMKs are under heavy dev
 
 ```sh
 cargo build -p simple_tmk --config openhcl/minimal_rt/x86_64-config.toml --release
+# The aarch64-unknown-none target doesn't support static PIEs at the moment.
+cargo +nightly build -p simple_tmk --config openhcl/minimal_rt/aarch64-config.toml \
+    --target openhcl/minimal_rt/aarch64-minimal_rt-none.json --release
 ```
 
 2. See the list of tests:
 
 ```sh
 cargo run -p tmk_vmm -- --tmk target/x86_64-unknown-none/release/simple_tmk --list
+cargo run -p tmk_vmm -- --tmk target/aarch64-minimal_rt-none/release/simple_tmk --list
 ```
 
 ```console
@@ -56,7 +60,12 @@ x86_64::ud2
 3. Choose a specific test, or run all (the default):
 
 ```sh
+# With KVM (on a Linux distro)
 cargo run -p tmk_vmm -- --tmk target/x86_64-unknown-none/release/simple_tmk --hv kvm
+# With HVF (macOS)
+cargo run -p tmk_vmm -- --tmk target/aarch64-minimal_rt-none/release/simple_tmk --hv hvf
+# With WHP (Windows)
+cargo run -p tmk_vmm -- --tmk target/aarch64-minimal_rt-none/release/simple_tmk --hv whp
 ```
 
 ```console
