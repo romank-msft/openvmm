@@ -18,7 +18,7 @@ predates running a full-fledged modern kernel so the tests can work with the har
 directly without the imposition of any specific kernel architecture.
 
 The TMKs use a specific protocol geared towards testing with a VMM. Nonetheless, you
-can use TMKs as a starting point in learning how the hadrware works and (with some
+can use TMKs as a starting point in learning how the hardware works and (with some
 effort) can run some bare-metal.
 
 ## What TMKs solve
