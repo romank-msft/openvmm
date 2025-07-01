@@ -15,7 +15,7 @@ OpenVMM includes a test harness that allows running TMKs (test microkernels) - t
 which are built and work just like guest kernels: no standard library is available and
 they have access to all (virtual) hardware. The code runs in an environment that normally
 predates running a full-fledged modern kernel so the tests can work with the hardware
-directly without the imposion of any specific kernel architecture.
+directly without the imposition of any specific kernel architecture.
 
 The TMKs use a specific protocol geared towards testing with a VMM. Nonetheless, you
 can use TMKs as a starting point in learning how the hadrware works and (with some
