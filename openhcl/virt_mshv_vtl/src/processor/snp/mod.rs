@@ -1850,36 +1850,37 @@ impl UhProcessor<'_, SnpBacked> {
                 // instruction pointer) or a trap (where the hardware
                 // advances the instruction pointer).
                 let is_write = no_accel_info.write_access();
-                let is_fault = !no_accel_info.write_access()
-                    || matches!(
-                        no_accel_info.apic_register_number(),
-                        SevAvicRegisterNumber::APR
-                            | SevAvicRegisterNumber::PPR
-                            | SevAvicRegisterNumber::ISR0
-                            | SevAvicRegisterNumber::ISR1
-                            | SevAvicRegisterNumber::ISR2
-                            | SevAvicRegisterNumber::ISR3
-                            | SevAvicRegisterNumber::ISR4
-                            | SevAvicRegisterNumber::ISR5
-                            | SevAvicRegisterNumber::ISR6
-                            | SevAvicRegisterNumber::ISR7
-                            | SevAvicRegisterNumber::TMR0
-                            | SevAvicRegisterNumber::TMR1
-                            | SevAvicRegisterNumber::TMR2
-                            | SevAvicRegisterNumber::TMR3
-                            | SevAvicRegisterNumber::TMR4
-                            | SevAvicRegisterNumber::TMR5
-                            | SevAvicRegisterNumber::TMR6
-                            | SevAvicRegisterNumber::TMR7
-                            | SevAvicRegisterNumber::IRR0
-                            | SevAvicRegisterNumber::IRR1
-                            | SevAvicRegisterNumber::IRR2
-                            | SevAvicRegisterNumber::IRR3
-                            | SevAvicRegisterNumber::IRR4
-                            | SevAvicRegisterNumber::IRR5
-                            | SevAvicRegisterNumber::IRR6
-                            | SevAvicRegisterNumber::IRR7
-                    );
+                let is_fault = matches!(
+                    no_accel_info.apic_register_number(),
+                    SevAvicRegisterNumber::VERSION
+                        | SevAvicRegisterNumber::APR
+                        | SevAvicRegisterNumber::PPR
+                        | SevAvicRegisterNumber::ISR0
+                        | SevAvicRegisterNumber::ISR1
+                        | SevAvicRegisterNumber::ISR2
+                        | SevAvicRegisterNumber::ISR3
+                        | SevAvicRegisterNumber::ISR4
+                        | SevAvicRegisterNumber::ISR5
+                        | SevAvicRegisterNumber::ISR6
+                        | SevAvicRegisterNumber::ISR7
+                        | SevAvicRegisterNumber::TMR0
+                        | SevAvicRegisterNumber::TMR1
+                        | SevAvicRegisterNumber::TMR2
+                        | SevAvicRegisterNumber::TMR3
+                        | SevAvicRegisterNumber::TMR4
+                        | SevAvicRegisterNumber::TMR5
+                        | SevAvicRegisterNumber::TMR6
+                        | SevAvicRegisterNumber::TMR7
+                        | SevAvicRegisterNumber::IRR0
+                        | SevAvicRegisterNumber::IRR1
+                        | SevAvicRegisterNumber::IRR2
+                        | SevAvicRegisterNumber::IRR3
+                        | SevAvicRegisterNumber::IRR4
+                        | SevAvicRegisterNumber::IRR5
+                        | SevAvicRegisterNumber::IRR6
+                        | SevAvicRegisterNumber::IRR7
+                        | SevAvicRegisterNumber::CURRENT_COUNT
+                );
                 let msr = X2APIC_MSR_BASE + no_accel_info.apic_register_number().0;
                 self.handle_msr_access(dev, entered_from_vtl, msr, is_write, is_fault);
 
@@ -2647,9 +2648,36 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     }
 }
 
-/// Advances rip to be the same as next_rip.
+/// Advances the instruction pointer.
+///
+/// The hardware may have provided the next instruction pointer in the VMSA, so we
+/// use that if available. That is always the case for the automatic exits (exit on #VC
+/// when ReflectVC is set in VMSA SEV features). If the hypervisor interaction si not
+/// required, there would be no #VC exit, and the next instruction pointer would be
+/// not populated by the hardware. See
+/// * 15.35.4 Types of Exits
+/// * 15.35.5 #VC Exception
+/// in the AMD PPR for more details.
 fn advance_to_next_instruction(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>) {
-    vmsa.set_rip(vmsa.next_rip());
+    match SevExitCode(vmsa.guest_error_code()) {
+        SevExitCode::AVIC_NOACCEL => {
+            // Access is performed via WRMSR/RDMSR,
+            // no next RIP is provided.
+            vmsa.set_rip(vmsa.rip() + 2);
+        }
+        _ => vmsa.set_rip(vmsa.next_rip()),
+    }
+
+    // TODO SNP: provide the precise implementaion for
+    // the next instruction pointer. For now, as a heuristic, we
+    // we report on `0`'s in the rip field. The guest would need to
+    // execute an instruction at the top of the VA space to make the
+    // insrtruction pointer wrap around to `0` or fault at `0` --
+    // seems unlikely.
+    if vmsa.rip() == 0 {
+        tracing::warn!("rip is zero, might need to parse the instruction stream");
+    }
+
     vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
 }
 
