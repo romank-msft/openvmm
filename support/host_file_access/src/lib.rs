@@ -210,25 +210,25 @@ impl<M: Read + Write + Seek> HostFileStorage<M> {
         data: HostData<'_>,
     ) -> Result<usize, HostFileError> {
         if self.eof {
-            tracing::debug!("Transfer requested after EOF reached");
+            tracing::info!("Transfer requested after EOF reached");
             return Err(HostFileError::EndOfFile);
         }
 
         if header.is_eof() {
-            tracing::debug!("End of file header received");
+            tracing::info!("End of file header received");
             self.eof = true;
             return Err(HostFileError::EndOfFile);
         } else if header.is_flush() {
-            tracing::debug!("Flush header received");
+            tracing::info!("Flush header received");
             self.medium.flush().map_err(HostFileError::IoError)?;
             return Ok(0);
         }
 
-        tracing::debug!("Transfer header {header:?}");
+        tracing::info!("Transfer header {header:?}");
 
         if let WriteLimit::Limit(limit) = self.write_limit {
             if self.bytes_written + header.data_size() as usize > limit {
-                tracing::debug!(
+                tracing::info!(
                     "Write limit exceeded: {} bytes written, limit is {} bytes",
                     self.bytes_written,
                     limit
@@ -285,7 +285,7 @@ impl<M: Read + Write + Seek> HostFileStorage<M> {
             _ => return Err(HostFileError::InvalidDirection),
         };
 
-        tracing::debug!(
+        tracing::info!(
             "Transfer completed: {} bytes transferred, totals: {} bytes written, {} bytes read",
             bytes_transferred,
             self.bytes_written,
@@ -316,9 +316,6 @@ impl<M: Read + Write + Seek> HostFileStorage<M> {
             match header.direction() {
                 HostFileOperation::READ => {
                     let bytes_read = self.transfer(header, HostData::Read(&mut buf))?;
-                    transport
-                        .write_all((bytes_read as u128).as_bytes())
-                        .map_err(HostFileError::IoError)?;
                     transport
                         .write_all(&buf[..bytes_read])
                         .map_err(HostFileError::IoError)?;
@@ -360,10 +357,6 @@ impl<M: Read + Write + Seek> HostFileStorage<M> {
                 HostFileOperation::READ => {
                     let bytes_read = self.transfer(header, HostData::Read(&mut buf))?;
                     transport
-                        .write_all((bytes_read as u128).as_bytes())
-                        .await
-                        .map_err(HostFileError::IoError)?;
-                    transport
                         .write_all(&buf[..bytes_read])
                         .await
                         .map_err(HostFileError::IoError)?;
@@ -404,7 +397,7 @@ impl<T: Read + Write> Drop for HostFileAccess<T> {
 
 impl<T: Read + Write> Write for HostFileAccess<T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        tracing::debug!("Writing {} bytes to host file access", buf.len());
+        tracing::info!("Writing {} bytes to host file access", buf.len());
 
         let header = TransportHeader::new()
             .with_seek_amount(0)
@@ -412,29 +405,24 @@ impl<T: Read + Write> Write for HostFileAccess<T> {
             .with_data_size(buf.len() as u32)
             .with_direction(HostFileOperation::WRITE);
 
-        self.transport
-            .write_all(header.as_bytes())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        self.transport
-            .write_all(buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        Ok(buf.len())
+        tracing::info!("Writing header to host file access: {:?}", header);
+        self.transport.write_all(header.as_bytes())?;
+
+        tracing::info!("Writing data to host file access");
+        self.transport.write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        tracing::debug!("Flushing host file access");
+        tracing::info!("Flushing host file access");
 
         let header = TransportHeader::flush();
-        self.transport
-            .write_all(header.as_bytes())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        Ok(())
+        self.transport.write_all(header.as_bytes())
     }
 }
 
 impl<T: Read + Write> Read for HostFileAccess<T> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::debug!("Reading {} bytes from host file access", buf.len());
+        tracing::info!("Reading {} bytes from host file access", buf.len());
 
         let header = TransportHeader::new()
             .with_seek_amount(0)
@@ -442,39 +430,19 @@ impl<T: Read + Write> Read for HostFileAccess<T> {
             .with_data_size(buf.len() as u32)
             .with_direction(HostFileOperation::READ);
 
+        tracing::info!("Writing header to host file access: {:?}", header);
         self.transport
             .write_all(header.as_bytes())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        let mut size_header = [0; 16];
-        self.transport
-            .read_exact(&mut size_header)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let size = u128::from_le_bytes(size_header) as usize;
-
-        tracing::debug!("{} bytes available", size);
-
-        if size == 0 {
-            tracing::debug!("End of file reached");
-            return Ok(0);
-        }
-        if size > buf.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Buffer too small for read operation",
-            ));
-        }
-
-        self.transport
-            .read_exact(buf[..size].as_mut())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        Ok(size)
+        tracing::info!("Reading data from host file access");
+        self.transport.read(buf)
     }
 }
 
 impl<T: Read + Write> Seek for HostFileAccess<T> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        tracing::debug!("Seeking in host file access to {:?}", pos);
+        tracing::info!("Seeking in host file access to {:?}", pos);
 
         let seek_amount = match pos {
             std::io::SeekFrom::Start(offset) => offset as i64,
