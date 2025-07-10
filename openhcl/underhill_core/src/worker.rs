@@ -3467,6 +3467,17 @@ struct WatchdogTimeoutNmi {
 #[async_trait::async_trait]
 impl WatchdogCallback for WatchdogTimeoutNmi {
     async fn on_timeout(&self) {
+        use cvm_tracing::CVM_CONFIDENTIAL;
+
+        tracing::warn!(
+            CVM_ALLOWED,
+            "watchdog timeout, Guest OS ID {:x?}",
+            self.partition.vtl0_guest_os_id()
+        );
+
+        let fdd = self.partition.fault_diagnostic_data();
+        tracing::warn!(CVM_CONFIDENTIAL, "fault diagnostic data: {fdd:x?}");
+
         crate::livedump::livedump().await;
 
         // Unlike Hyper-V, we only send the NMI to the BSP.

@@ -1608,6 +1608,47 @@ impl Hcl {
     pub fn dr6_shared(&self) -> bool {
         self.dr6_shared
     }
+
+    /// Returns the stack pointer and instruction pointer.
+    ///
+    /// TODO: Regretfully, bypasses the existing interfaces and doesn't take
+    /// into account wthether the VM is a hardware isolated VM or not.
+    /// Returnning an `Option` for the case this is good enough to generalize.
+    pub fn fault_diagnostic_data(&self) -> Option<(u64, u64)> {
+        let stack_pointer;
+        let instruction_pointer;
+        let target_vtl = HvInputVtl::new()
+            .with_target_vtl_value(0)
+            .with_use_target_vtl(true);
+
+        #[cfg(guest_arch = "x86_64")]
+        {
+            stack_pointer = self
+                .get_vp_register(HvX64RegisterName::Rsp, target_vtl)
+                .expect("must succeed")
+                .as_u64();
+
+            instruction_pointer = self
+                .get_vp_register(HvX64RegisterName::Rip, target_vtl)
+                .expect("must succeed")
+                .as_u64();
+        }
+
+        #[cfg(guest_arch = "aarch64")]
+        {
+            stack_pointer = self
+                .get_vp_register(HvArm64RegisterName::XSp, target_vtl)
+                .expect("must succeed")
+                .as_u64();
+
+            instruction_pointer = self
+                .get_vp_register(HvArm64RegisterName::XPc, target_vtl)
+                .expect("must succeed")
+                .as_u64();
+        }
+
+        Some((stack_pointer, instruction_pointer))
+    }
 }
 
 #[derive(Debug)]

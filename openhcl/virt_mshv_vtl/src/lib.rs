@@ -191,6 +191,14 @@ pub struct UhPartition {
     interrupt_targets: VtlArray<Arc<UhInterruptTarget>, 2>,
 }
 
+/// Some diagnostic data that can be collected on a fault.
+#[derive(Debug)]
+pub struct FaultDiagnosticData {
+    stack_pointer: u64,
+    instruction_pointer: u64,
+    stack_trace: [u64; 16],
+}
+
 /// Underhill partition.
 #[derive(Inspect)]
 #[inspect(extra = "UhPartitionInner::inspect_extra")]
@@ -830,6 +838,28 @@ impl UhPartition {
                 .reference_time()
                 .expect("should not fail to get the reference time")
         }
+    }
+
+    /// Returns any fault diagnostic data that can be collected.
+    pub fn fault_diagnostic_data(&self) -> Option<FaultDiagnosticData> {
+        self.inner
+            .hcl
+            .fault_diagnostic_data()
+            .map(|(stack_pointer, instruction_pointer)| {
+                let mut fdd = FaultDiagnosticData {
+                    stack_pointer,
+                    instruction_pointer,
+                    stack_trace: [0; 16],
+                };
+                let _ = fdd.instruction_pointer;
+
+                // Will work only for the identical mapping.
+                // We don't need more than that. Best effort.
+                let mem = &self.inner.gm[Vtl::Vtl0];
+                mem.read_at(fdd.stack_pointer, fdd.stack_trace.as_mut_bytes())
+                    .ok();
+                fdd
+            })
     }
 }
 
