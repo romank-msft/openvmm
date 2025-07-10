@@ -23,6 +23,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use cvm_tracing::CVM_ALLOWED;
 use futures::AsyncReadExt;
+use futures::AsyncSeekExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -372,6 +373,7 @@ impl LoadedVm {
                                 pal_async::socket::PolledSocket::new(&vmlinux_driver, socket)?;
                             let mut hfa = host_file_access::HostFileAccessAsync::new(socket);
                             let mut vmlinux = vec![0; 16];
+                            hfa.seek(std::io::SeekFrom::Start(0)).await?;
                             hfa.read(&mut vmlinux).await?;
 
                             let mut hasher = sha2::Sha256::new();

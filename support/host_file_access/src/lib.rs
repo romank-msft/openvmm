@@ -462,7 +462,7 @@ impl<T: Read + Write> Seek for HostFileAccess<T> {
             .with_seek_amount(seek_amount)
             .with_seek_pos(SeekPosition::START)
             .with_data_size(0)
-            .with_direction(HostFileOperation::READ);
+            .with_direction(HostFileOperation::WRITE);
 
         self.transport
             .write_all(header.as_bytes())
@@ -591,7 +591,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncSeek for HostFileAccessAsync<T> {
             .with_seek_amount(seek_amount)
             .with_seek_pos(SeekPosition::START)
             .with_data_size(0)
-            .with_direction(HostFileOperation::READ);
+            .with_direction(HostFileOperation::WRITE);
 
         tracing::info!("Writing seek header to host file access: {:?}", header);
         match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
