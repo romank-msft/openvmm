@@ -22,6 +22,8 @@ use crate::worker::NetworkSettingsError;
 use anyhow::Context;
 use async_trait::async_trait;
 use cvm_tracing::CVM_ALLOWED;
+use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -44,6 +46,7 @@ use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_dma_manager::DmaClientSpawner;
 use openhcl_dma_manager::OpenhclDmaManager;
+use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -52,8 +55,6 @@ use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
-use std::io::Read;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -243,6 +244,9 @@ impl LoadedVm {
             .await
             .expect("no failure");
 
+        let (vmlinux_thread, vmlinux_driver) = DefaultPool::spawn_on_thread("vmlinux");
+        let (log_thread, log_driver) = DefaultPool::spawn_on_thread("log");
+
         let state = loop {
             enum Event<T> {
                 WorkerRpc(WorkerRpc<T>),
@@ -363,32 +367,32 @@ impl LoadedVm {
                     UhVmRpc::VmLinux(rpc) => {
                         tracing::info!(CVM_ALLOWED, "reading vmlinux from the host");
 
-                        pal_async::local::block_with_io(async |_| {
-                            rpc.handle_failable::<_, anyhow::Error>(async |socket| {
-                                let mut hfa = host_file_access::HostFileAccess::new(socket);
-                                let mut vmlinux = vec![];
-                                hfa.read_to_end(&mut vmlinux)?;
+                        rpc.handle_failable::<_, anyhow::Error>(async |socket| {
+                            let socket =
+                                pal_async::socket::PolledSocket::new(&vmlinux_driver, socket)?;
+                            let mut hfa = host_file_access::HostFileAccessAsync::new(socket);
+                            let mut vmlinux = vec![0; 16];
+                            hfa.read(&mut vmlinux).await?;
 
-                                let mut hasher = sha2::Sha256::new();
-                                hasher.update(&vmlinux);
-                                let result = hasher.finalize();
-                                tracing::info!(CVM_ALLOWED, "vmlinux sha256: {:x?}", result);
-                                Ok(())
-                            })
-                            .await
-                        });
+                            let mut hasher = sha2::Sha256::new();
+                            hasher.update(&vmlinux);
+                            let result = hasher.finalize();
+                            tracing::info!(CVM_ALLOWED, "vmlinux sha256: {:x?}", result);
+                            Ok(())
+                        })
+                        .await
                     }
                     UhVmRpc::SomeLog(rpc) => {
                         tracing::info!(CVM_ALLOWED, "writing log to the host");
 
-                        pal_async::local::block_with_io(async |_| {
-                            rpc.handle_failable::<_, anyhow::Error>(async |socket| {
-                                let mut hfa = host_file_access::HostFileAccess::new(socket);
-                                hfa.write_all(b"Hello from underhill!")?;
-                                Ok(())
-                            })
-                            .await
-                        });
+                        rpc.handle_failable::<_, anyhow::Error>(async |socket| {
+                            let socket = pal_async::socket::PolledSocket::new(&log_driver, socket)?;
+
+                            let mut hfa = host_file_access::HostFileAccessAsync::new(socket);
+                            hfa.write_all(b"Hello from underhill!").await?;
+                            Ok(())
+                        })
+                        .await
                     }
                 },
                 Event::ServicingRequest(message) => {

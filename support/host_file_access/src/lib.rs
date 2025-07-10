@@ -13,12 +13,19 @@
 //! end of the file. Any transfer after that will return an error.
 
 use bitfield_struct::bitfield;
+use futures::AsyncRead;
 use futures::AsyncReadExt;
+use futures::AsyncSeek;
+use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::task::Context;
+use futures::task::Poll;
 use open_enum::open_enum;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
+use std::pin::Pin;
+use std::task::ready;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -388,6 +395,7 @@ impl<T: Read + Write> HostFileAccess<T> {
 
 impl<T: Read + Write> Drop for HostFileAccess<T> {
     fn drop(&mut self) {
+        tracing::info!("Dropping HostFileAccess, sending EOF header");
         let header = TransportHeader::eof();
         if let Err(e) = self.transport.write_all(header.as_bytes()) {
             tracing::error!("Failed to write EOF header: {}", e);
@@ -460,6 +468,153 @@ impl<T: Read + Write> Seek for HostFileAccess<T> {
             .write_all(header.as_bytes())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         Ok(seek_amount as u64)
+    }
+}
+
+///! A wrapper around a transport that provides file-like access.
+pub struct HostFileAccessAsync<T: AsyncRead + AsyncWrite + Unpin> {
+    transport: T,
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> HostFileAccessAsync<T> {
+    ///! Creates a new `HostFileAccessAsync` with the given transport.
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncWrite for HostFileAccessAsync<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        tracing::info!("Writing {} bytes to host file access", buf.len());
+
+        let header = TransportHeader::new()
+            .with_seek_amount(0)
+            .with_seek_pos(SeekPosition::START)
+            .with_data_size(buf.len() as u32)
+            .with_direction(HostFileOperation::WRITE);
+
+        tracing::info!("Writing header to host file access: {:?}", header);
+        match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
+            Ok(size) => {
+                tracing::info!("Wrote header to host file access: {:?}", size);
+                tracing::info!("Writing data to host file access");
+                Pin::new(&mut self.transport).poll_write(cx, buf)
+            }
+            Err(err) => {
+                tracing::error!("Failed to write header to host file access: {:?}", err);
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        tracing::info!("Flushing host file access");
+
+        let header = TransportHeader::flush();
+        match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
+            Ok(size) => {
+                tracing::info!("Flushed host file access: {:?}", size);
+                Poll::Ready(Ok(()))
+            }
+            Err(err) => {
+                tracing::error!("Failed to flush host file access: {:?}", err);
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        tracing::info!("Closing host file access");
+
+        let header = TransportHeader::eof();
+        match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
+            Ok(size) => {
+                tracing::info!("Closed host file access: {:?}", size);
+                Poll::Ready(Ok(()))
+            }
+            Err(err) => {
+                tracing::error!("Failed to close host file access: {:?}", err);
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for HostFileAccessAsync<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        tracing::info!("Reading {} bytes from host file access", buf.len());
+
+        let header = TransportHeader::new()
+            .with_seek_amount(0)
+            .with_seek_pos(SeekPosition::START)
+            .with_data_size(buf.len() as u32)
+            .with_direction(HostFileOperation::READ);
+
+        tracing::info!("Writing header to host file access: {:?}", header);
+        match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
+            Ok(size) => {
+                tracing::info!("Wrote header to host file access: {:?}", size);
+                tracing::info!("Reading data from host file access");
+                Pin::new(&mut self.transport).poll_read(cx, buf)
+            }
+            Err(err) => {
+                tracing::error!("Failed to write header to host file access: {:?}", err);
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncSeek for HostFileAccessAsync<T> {
+    fn poll_seek(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        pos: std::io::SeekFrom,
+    ) -> Poll<std::io::Result<u64>> {
+        tracing::info!("Seeking in host file access to {:?}", pos);
+
+        let seek_amount = match pos {
+            std::io::SeekFrom::Start(offset) => offset as i64,
+            std::io::SeekFrom::End(offset) => offset as i64,
+            std::io::SeekFrom::Current(offset) => offset as i64,
+        };
+
+        let header = TransportHeader::new()
+            .with_seek_amount(seek_amount)
+            .with_seek_pos(SeekPosition::START)
+            .with_data_size(0)
+            .with_direction(HostFileOperation::READ);
+
+        tracing::info!("Writing seek header to host file access: {:?}", header);
+        match ready!(Pin::new(&mut self.transport).poll_write(cx, header.as_bytes())) {
+            Ok(size) => {
+                tracing::info!("Wrote seek header to host file access: {:?}", size);
+                Poll::Ready(Ok(seek_amount as u64))
+            }
+            Err(err) => {
+                tracing::error!("Failed to write seek header to host file access: {:?}", err);
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> Drop for HostFileAccessAsync<T> {
+    fn drop(&mut self) {
+        tracing::info!("Dropping HostFileAccessAsync, sending EOF header");
+        let header = TransportHeader::eof();
+        let _ = Pin::new(&mut self.transport).poll_write(
+            &mut Context::from_waker(futures::task::noop_waker_ref()),
+            header.as_bytes(),
+        );
     }
 }
 
