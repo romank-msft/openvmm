@@ -12,6 +12,8 @@
 //! either direction. The sentinel value of `-1i128` for the header designates the
 //! end of the file. Any transfer after that will return an error.
 use bitfield_struct::bitfield;
+use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 use open_enum::open_enum;
 use std::io::Read;
 use std::io::Seek;
@@ -318,6 +320,65 @@ impl<'a, M: Read + Write + Seek> HostFileStorage<'a, M> {
                 _ => return Err(HostFileError::InvalidOperation),
             }
         }
+    }
+
+    /// Runs the data operations on the provided transport.
+    pub async fn run_async<T: AsyncReadExt + AsyncWriteExt + Unpin>(
+        &mut self,
+        mut transport: T,
+    ) -> Result<(), HostFileError> {
+        if self.eof {
+            return Err(HostFileError::EndOfFile);
+        }
+
+        let mut header = TransportHeader::eof();
+        transport
+            .read_exact(header.as_mut_bytes())
+            .await
+            .map_err(HostFileError::IoError)?;
+
+        tracing::info!("Received header: {:?}", header);
+
+        if header.is_eof() {
+            self.eof = true;
+            return Ok(());
+        }
+
+        let mut buf = vec![0; header.size()];
+        match header.operation() {
+            HostFileOperation::SEEK => {
+                let new_pos = self.transfer(header, HostData::Write(&[]))?;
+                transport
+                    .write_all(new_pos.as_bytes())
+                    .await
+                    .map_err(HostFileError::IoError)?;
+            }
+            HostFileOperation::READ => {
+                let bytes_read = self.transfer(header, HostData::Read(&mut buf))?;
+                transport
+                    .write_all(bytes_read.as_bytes())
+                    .await
+                    .map_err(HostFileError::IoError)?;
+                if bytes_read == 0 {
+                    tracing::info!("End of file reached during read operation");
+                    self.eof = true;
+                    return Ok(());
+                }
+                transport
+                    .write_all(&buf[..bytes_read])
+                    .await
+                    .map_err(HostFileError::IoError)?;
+            }
+            HostFileOperation::WRITE => {
+                transport
+                    .read_exact(&mut buf)
+                    .await
+                    .map_err(HostFileError::IoError)?;
+                self.transfer(header, HostData::Write(&buf))?;
+            }
+            _ => return Err(HostFileError::InvalidOperation),
+        }
+        Ok(())
     }
 }
 

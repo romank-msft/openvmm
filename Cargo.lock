@@ -2887,6 +2887,7 @@ name = "host_file_access"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
+ "futures",
  "open_enum",
  "thiserror 2.0.12",
  "tracing",

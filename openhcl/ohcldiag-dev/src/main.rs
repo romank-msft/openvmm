@@ -898,18 +898,20 @@ pub fn main() -> anyhow::Result<()> {
                 existing,
                 write,
             } => {
+                let driver = driver.clone();
+                let client = new_client(driver, &vm)?;
+                let mut transport = client.host_file_access(&id).await?;
+
                 let mut medium = fs_err::OpenOptions::new()
                     .read(true)
                     .write(write)
                     .create(!existing)
                     .open(dst)
                     .context("failed to open file")?;
-                let client = new_client(driver.clone(), &vm)?;
-                let mut transport = client.host_file_access(&id).await?.into_inner();
 
                 let mut data_stor =
                     host_file_access::HostFileStorage::new(&mut medium, size_limit.into());
-                match data_stor.run(&mut transport) {
+                match data_stor.run_async(&mut transport).await {
                     Ok(_) => {}
                     Err(host_file_access::HostFileError::EndOfFile) => {
                         eprintln!(
