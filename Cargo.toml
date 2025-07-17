@@ -11,6 +11,7 @@ members = [
   "flowey/flowey_hvlite",
   "xtask",
   # openhcl
+  "openhcl/get_vmrs",
   "openhcl/ohcldiag-dev",
   "openhcl/openhcl_boot",
   "openhcl/openvmm_hcl",
@@ -26,6 +27,7 @@ members = [
   # fuzzing
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
+  "support/host_file_access",
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
@@ -140,6 +142,7 @@ safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sparse_mmap = { path = "support/sparse_mmap" }
+host_file_access = { path = "support/host_file_access" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 tee_call = { path = "support/tee_call" }
@@ -159,6 +162,7 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
+get_vmrs = { path = "openhcl/get_vmrs" }
 hcl = { path = "openhcl/hcl" }
 hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }

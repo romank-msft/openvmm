@@ -2462,6 +2462,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "get_vmrs"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "guid",
+ "host_file_access",
+ "socket2",
+ "tracing",
+ "tracing-subscriber",
+ "vmsocket",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2880,6 +2894,17 @@ dependencies = [
  "inspect",
  "memory_range",
  "tracing",
+]
+
+[[package]]
+name = "host_file_access"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.10.1",
+ "open_enum",
+ "thiserror 2.0.12",
+ "tracing",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -7522,6 +7547,7 @@ dependencies = [
  "guid",
  "hcl",
  "hcl_compat_uefi_nvram_storage",
+ "host_file_access",
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",

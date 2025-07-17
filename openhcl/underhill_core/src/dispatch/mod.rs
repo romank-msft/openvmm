@@ -51,6 +51,9 @@ use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::io::Read;
+use std::io::Seek;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -329,7 +332,64 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
+                    UhVmRpc::Pause(rpc) => {
+                        let save_vmrs = || -> Result<(), anyhow::Error> {
+                            let mut socket = vmsocket::VmSocket::new()?;
+                            socket.bind(vmsocket::VmAddress::vsock_any(4242))?;
+                            let listener = socket.listen(1)?;
+                            tracing::info!(
+                                CVM_ALLOWED,
+                                "VTL0 paused, waiting for client connection"
+                            );
+
+                            let (mut client_socket, vm_address) = listener.accept()?;
+                            tracing::info!(CVM_ALLOWED, ?vm_address, "connection accepted");
+
+                            let mut hfa =
+                                host_file_access::HostFileAccess::new(&mut client_socket)?;
+                            let data = "VTL0 paused, waiting for save request";
+                            tracing::info!(CVM_ALLOWED, "writing {} bytes", data.len());
+                            hfa.write_all(data.as_bytes())?;
+                            hfa.flush()?;
+                            {
+                                let mut buf = vec![];
+                                hfa.seek(std::io::SeekFrom::Start(0))?;
+                                hfa.read_to_end(&mut buf)?;
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    "#1 Received {} bytes: {}",
+                                    buf.len(),
+                                    String::from_utf8_lossy(&buf)
+                                );
+                            }
+                            {
+                                let mut buf = vec![];
+                                hfa.seek(std::io::SeekFrom::Start(13))?;
+                                hfa.read_to_end(&mut buf)?;
+                                tracing::info!(
+                                    CVM_ALLOWED,
+                                    "#2 Received {} bytes: {}",
+                                    buf.len(),
+                                    String::from_utf8_lossy(&buf)
+                                );
+                            }
+
+                            Ok(())
+                        };
+
+                        rpc.handle(async |()| {
+                            let stopped = self.stop().await;
+
+                            if stopped {
+                                if let Err(err) = save_vmrs() {
+                                    tracing::error!(CVM_ALLOWED, error = ?err, "Failed to save the VMRS");
+                                }
+                            }
+
+                            stopped
+                        })
+                        .await;
+                    }
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
