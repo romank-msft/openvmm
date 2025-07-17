@@ -772,6 +772,29 @@ impl DiagClient {
 
         Ok(state.data)
     }
+
+    /// Connect to the host file access endpoint.
+    pub async fn host_file_access(
+        &self,
+        id: &String,
+    ) -> anyhow::Result<PolledSocket<socket2::Socket>> {
+        eprintln!("Requesting host file access for ID: {}", id);
+        let (conn, socket) = self.connect_data().await?;
+        eprintln!("Connected to host file access for ID: {}", id);
+        self.ttrpc
+            .call()
+            .start(
+                diag_proto::UnderhillDiag::HostFile,
+                diag_proto::HostFileRequest {
+                    id: id.clone(),
+                    conn,
+                },
+            )
+            .await
+            .map_err(grpc_status)?;
+        eprintln!("Host file access request completed for ID: {}", id);
+        Ok(socket)
+    }
 }
 
 fn grpc_status(status: Status) -> anyhow::Error {

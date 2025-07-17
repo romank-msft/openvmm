@@ -47,10 +47,14 @@ use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use sha2::Digest;
 use socket2::Socket;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::io::Read;
+use std::io::Seek;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -78,6 +82,8 @@ pub enum UhVmRpc {
     Pause(Rpc<(), bool>),
     Resume(Rpc<(), bool>),
     Save(FailableRpc<(), Vec<u8>>),
+    VmLinux(FailableRpc<Socket, ()>),
+    SomeLog(FailableRpc<Socket, ()>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
 }
@@ -352,6 +358,71 @@ impl LoadedVm {
                                 .as_ref()
                                 .context("No network settings have been set up")?;
                             network_settings.packet_capture(params).await
+                        })
+                        .await
+                    }
+                    UhVmRpc::VmLinux(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "reading vmlinux from the host");
+                        rpc.handle_failable::<_, anyhow::Error>(async |mut socket| {
+                            threadpool
+                                .spawn("read_vmlinux", async move {
+                                    let mut handle = || -> anyhow::Result<()> {
+                                        let mut hfa =
+                                            host_file_access::HostFileAccess::new(&mut socket)?;
+                                        let mut vmlinux = vec![];
+                                        hfa.seek(std::io::SeekFrom::Start(0))?;
+                                        let amount = hfa.read_to_end(&mut vmlinux)?;
+
+                                        let mut hasher = sha2::Sha256::new();
+                                        hasher.update(&vmlinux);
+                                        let result = hasher.finalize();
+                                        tracing::info!(
+                                            CVM_ALLOWED,
+                                            "vmlinux sha256: {:x?} ({} bytes)",
+                                            result,
+                                            amount
+                                        );
+
+                                        Ok(())
+                                    };
+
+                                    if let Err(err) = handle() {
+                                        tracing::error!(
+                                            CVM_ALLOWED,
+                                            error = err.as_ref() as &dyn std::error::Error,
+                                            "failed to read vmlinux from the host"
+                                        );
+                                    }
+                                })
+                                .await;
+                            Ok(())
+                        })
+                        .await
+                    }
+                    UhVmRpc::SomeLog(rpc) => {
+                        tracing::info!(CVM_ALLOWED, "writing log to the host");
+
+                        rpc.handle_failable::<_, anyhow::Error>(async |mut socket| {
+                            threadpool
+                                .spawn("write_log", async move {
+                                    let mut handle = || -> anyhow::Result<()> {
+                                        let mut hfa =
+                                            host_file_access::HostFileAccess::new(&mut socket)?;
+                                        hfa.write_all(b"Hello from underhill!")?;
+                                        tracing::info!(CVM_ALLOWED, "wrote log to the host");
+                                        Ok(())
+                                    };
+
+                                    if let Err(err) = handle() {
+                                        tracing::error!(
+                                            CVM_ALLOWED,
+                                            error = err.as_ref() as &dyn std::error::Error,
+                                            "failed to write log to the host"
+                                        );
+                                    }
+                                })
+                                .await;
+                            Ok(())
                         })
                         .await
                     }
