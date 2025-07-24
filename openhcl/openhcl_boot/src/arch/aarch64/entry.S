@@ -9,8 +9,7 @@
 // because the stack itself is in BSS, so BSS must be zeroed before the stack is
 // set up.
 
-    .weak _DYNAMIC
-    .hidden _DYNAMIC
+    .extern _DYNAMIC
 
     .balign 0x10
 .globl _start
@@ -77,6 +76,7 @@ _start:
     adrp    x2, _DYNAMIC
     add     x2, x2, :lo12:_DYNAMIC
     bl      {relocate}
+    b       .
 
     // Restore the IGVM parameter from the stack and call the main function.
     // Its first parameter is ignored.

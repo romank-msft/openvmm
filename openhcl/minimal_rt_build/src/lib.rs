@@ -78,7 +78,17 @@ pub fn init() -> bool {
                 _ => {
                     unsupported("aarch64-unknown-linux-musl");
                 }
-            }
+            };
+
+            // Create the minimal_rt linker script for the crate that is using
+            // this library.
+            const MINIMAL_RT_LD_SCRIPT_AARCH64: &str = include_str!("../aarch64-minimal_rt.ld");
+
+            let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is not set");
+            let ld_path = std::path::Path::new(&out_dir).join("aarch64-minimal_rt.ld");
+            std::fs::write(&ld_path, MINIMAL_RT_LD_SCRIPT_AARCH64)
+                .expect("failed to write aarch64 minimal_rt linker script");
+            println!("cargo:rustc-link-arg=-T{}", ld_path.display());
         }
         arch => panic!("unsupported arch {arch}"),
     }
