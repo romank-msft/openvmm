@@ -1318,6 +1318,8 @@ pub struct UhPartitionNewParams<'a> {
     pub use_mmio_hypercalls: bool,
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
+    /// Running the VMBus relay.
+    pub vmbus_relay: bool,
 }
 
 /// Parameters to [`UhProtoPartition::build`].
@@ -1525,6 +1527,7 @@ impl<'a> UhProtoPartition<'a> {
                 cpuid_pages: params.cvm_cpuid_info.unwrap(),
                 vtom: params.vtom.unwrap(),
                 access_vsm: guest_vsm_available,
+                paravisor_vmbus: params.vmbus_relay,
             }
             .build()
             .map_err(Error::CvmCpuid)?,
@@ -1533,6 +1536,7 @@ impl<'a> UhProtoPartition<'a> {
                 topology: params.topology,
                 vtom: params.vtom.unwrap(),
                 access_vsm: guest_vsm_available,
+                paravisor_vmbus: params.vmbus_relay,
             }
             .build()
             .map_err(Error::CvmCpuid)?,
@@ -2175,21 +2179,28 @@ impl UhPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     fn cpuid_result(&self, eax: u32, ecx: u32, default: &[u32; 4]) -> [u32; 4] {
         let r = self.cpuid.result(eax, ecx, default);
-        if eax == hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES {
-            // Update the VSM access privilege.
-            //
-            // FUTURE: Investigate if this is really necessary for non-CVM--the
-            // hypervisor should already update this correctly.
-            //
-            // If it is only for CVM, then it should be moved to the
-            // CVM-specific cpuid fixups.
-            let mut features = hvdef::HvFeatures::from_cpuid(r);
-            if self.backing_shared.guest_vsm_disabled() {
-                features.set_privileges(features.privileges().with_access_vsm(false));
+        match eax {
+            hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES => {
+                // Update the VSM access privilege.
+                //
+                // FUTURE: Investigate if this is really necessary for non-CVM--the
+                // hypervisor should already update this correctly.
+                //
+                // If it is only for CVM, then it should be moved to the
+                // CVM-specific cpuid fixups.
+                let mut features = hvdef::HvFeatures::from_cpuid(r);
+                if self.backing_shared.guest_vsm_disabled() {
+                    features.set_privileges(features.privileges().with_access_vsm(false));
+                }
+                features.into_cpuid()
             }
-            features.into_cpuid()
-        } else {
-            r
+            hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION => {
+                let mut config = hvdef::HvIsolationConfiguration::from_cpuid(r);
+                config.set_paravisor_present(true);
+                config.set_paravisor_vmbus(self.vmbus_relay);
+                config.into_cpuid()
+            }
+            _ => r,
         }
     }
 }

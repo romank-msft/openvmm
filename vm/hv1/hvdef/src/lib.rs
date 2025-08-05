@@ -245,9 +245,11 @@ pub struct HvHardwareFeatures {
 }
 
 #[bitfield(u128)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvIsolationConfiguration {
     pub paravisor_present: bool,
-    #[bits(31)]
+    pub paravisor_vmbus: bool,
+    #[bits(30)]
     pub _reserved0: u32,
 
     #[bits(4)]
@@ -260,6 +262,16 @@ pub struct HvIsolationConfiguration {
     _reserved12: u32,
     _reserved2: u32,
     _reserved3: u32,
+}
+
+impl HvIsolationConfiguration {
+    pub fn from_cpuid(cpuid: [u32; 4]) -> Self {
+        zerocopy::transmute!(cpuid)
+    }
+
+    pub fn into_cpuid(self) -> [u32; 4] {
+        zerocopy::transmute!(self)
+    }
 }
 
 open_enum! {

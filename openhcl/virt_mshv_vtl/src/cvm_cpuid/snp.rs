@@ -96,10 +96,16 @@ pub struct SnpCpuidInitializer {
     cpuid_pages: Vec<HvPspCpuidPage>,
     access_vsm: bool,
     vtom: u64,
+    paravisor_vmbus: bool,
 }
 
 impl SnpCpuidInitializer {
-    pub fn new(cpuid_pages_data: &[u8], access_vsm: bool, vtom: u64) -> Self {
+    pub fn new(
+        cpuid_pages_data: &[u8],
+        access_vsm: bool,
+        vtom: u64,
+        paravisor_vmbus: bool,
+    ) -> Self {
         let mut cpuid_pages = vec![
             HvPspCpuidPage::new_zeroed();
             cpuid_pages_data.len() / size_of::<HvPspCpuidPage>()
@@ -113,6 +119,7 @@ impl SnpCpuidInitializer {
             cpuid_pages,
             access_vsm,
             vtom,
+            paravisor_vmbus,
         }
     }
 }
@@ -449,6 +456,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
 
         let isolation_config = hvdef::HvIsolationConfiguration::new()
             .with_paravisor_present(true)
+            .with_paravisor_vmbus(self.paravisor_vmbus)
             .with_isolation_type(virt::IsolationType::Snp.to_hv().0)
             .with_shared_gpa_boundary_active(true)
             .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8);

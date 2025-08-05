@@ -93,11 +93,13 @@ pub enum CpuidResultsIsolationType<'a> {
         cpuid_pages: &'a [u8],
         access_vsm: bool,
         vtom: u64,
+        paravisor_vmbus: bool,
     },
     Tdx {
         topology: &'a ProcessorTopology<X86Topology>,
         access_vsm: bool,
         vtom: u64,
+        paravisor_vmbus: bool,
     },
 }
 
@@ -210,20 +212,22 @@ impl CpuidResults {
                 cpuid_pages,
                 access_vsm,
                 vtom,
+                paravisor_vmbus,
             } => {
                 assert!(
                     cpuid_pages.len() % size_of::<HvPspCpuidPage>() == 0 && !cpuid_pages.is_empty()
                 );
 
-                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom);
+                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom, paravisor_vmbus);
                 &snp_init as &dyn CpuidArchInitializer
             }
             CpuidResultsIsolationType::Tdx {
                 topology,
                 access_vsm,
                 vtom,
+                paravisor_vmbus,
             } => {
-                tdx_init = TdxCpuidInitializer::new(topology, access_vsm, vtom);
+                tdx_init = TdxCpuidInitializer::new(topology, access_vsm, vtom, paravisor_vmbus);
                 &tdx_init as &dyn CpuidArchInitializer
             }
         };

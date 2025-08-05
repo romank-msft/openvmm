@@ -39,14 +39,21 @@ pub struct TdxCpuidInitializer<'a> {
     topology: &'a ProcessorTopology<X86Topology>,
     access_vsm: bool,
     vtom: u64,
+    paravisor_vmbus: bool,
 }
 
 impl<'a> TdxCpuidInitializer<'a> {
-    pub fn new(topology: &'a ProcessorTopology<X86Topology>, access_vsm: bool, vtom: u64) -> Self {
+    pub fn new(
+        topology: &'a ProcessorTopology<X86Topology>,
+        access_vsm: bool,
+        vtom: u64,
+        paravisor_vmbus: bool,
+    ) -> Self {
         Self {
             topology,
             access_vsm,
             vtom,
+            paravisor_vmbus,
         }
     }
 
@@ -322,6 +329,7 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
 
         let isolation_config = hvdef::HvIsolationConfiguration::new()
             .with_paravisor_present(true)
+            .with_paravisor_vmbus(self.paravisor_vmbus)
             .with_isolation_type(virt::IsolationType::Tdx.to_hv().0)
             .with_shared_gpa_boundary_active(true)
             .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8);
