@@ -927,7 +927,10 @@ impl InitializedVm {
         if cfg.hypervisor.with_hv {
             // Only advertise extended IOAPIC on non-PCAT systems.
             let extended_ioapic_rte = !matches!(cfg.load_mode, LoadMode::Pcat { .. });
-            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte));
+            cpuid.extend(vmm_core::cpuid::hyperv_cpuid_leaves(
+                extended_ioapic_rte,
+                cfg.vtl2_vmbus.is_some(),
+            ));
         }
 
         // Add in topology CPUID leaves.

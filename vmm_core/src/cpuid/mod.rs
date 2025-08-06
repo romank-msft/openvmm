@@ -10,6 +10,7 @@ use hvdef::VIRTUALIZATION_STACK_CPUID_PROPERTIES;
 use hvdef::VIRTUALIZATION_STACK_CPUID_VENDOR;
 use hvdef::VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE;
 use hvdef::VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE;
+use hvdef::VS1_PARTITION_PROPERTIES_EAX_VMBUS_RELAY;
 use virt::CpuidLeaf;
 use x86defs::cpuid::CpuidFunction;
 
@@ -22,7 +23,10 @@ pub type CpuidFn<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 /// `extended_ioapic_rte` indicates that MSIs and the IOAPIC can reference a
 /// 15-bit APIC ID instead of the architectural 8-bit value. To match Hyper-V
 /// behavior, this should be enabled for non-PCAT VMs.
-pub fn hyperv_cpuid_leaves(extended_ioapic_rte: bool) -> impl Iterator<Item = CpuidLeaf> {
+pub fn hyperv_cpuid_leaves(
+    extended_ioapic_rte: bool,
+    vmbus_relay: bool,
+) -> impl Iterator<Item = CpuidLeaf> {
     [
         // Enable the virtualization bit.
         //
@@ -52,6 +56,11 @@ pub fn hyperv_cpuid_leaves(extended_ioapic_rte: bool) -> impl Iterator<Item = Cp
                 VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE
                     | if extended_ioapic_rte {
                         VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE
+                    } else {
+                        0
+                    }
+                    | if vmbus_relay {
+                        VS1_PARTITION_PROPERTIES_EAX_VMBUS_RELAY
                     } else {
                         0
                     },

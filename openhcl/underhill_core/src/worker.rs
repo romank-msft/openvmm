@@ -1743,7 +1743,8 @@ async fn new_underhill_vm(
     #[cfg(guest_arch = "x86_64")]
     let cpuid = {
         let extended_ioapic_rte = !matches!(firmware_type, FirmwareType::Pcat);
-        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte).collect::<Vec<_>>()
+        vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte, with_vmbus_relay)
+            .collect::<Vec<_>>()
     };
 
     let (crash_notification_send, crash_notification_recv) = mesh::channel();
