@@ -111,9 +111,6 @@ pub struct UhProcessor<'a, T: Backing> {
     #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter()).map_value(|a| a.0)")]
     exit_activities: VtlArray<ExitActivity, 2>,
 
-    /// Perform the defreed initialization of the startup suspend state
-    deferred_init: bool,
-
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
     // together by the compiler.
@@ -218,6 +215,11 @@ mod private {
             this: &'a mut UhProcessor<'p, Self>,
             vtl: GuestVtl,
         ) -> Self::StateAccess<'p, 'a>;
+
+        /// Called before the first `run_vp` call to allow the backing to
+        /// perform any pre-run tasks. Must be idempotent--may be called again
+        /// before some subsequent `run_vp` calls.
+        fn pre_run_vp(_this: &mut UhProcessor<'_, Self>) {}
 
         fn run_vp(
             this: &mut UhProcessor<'_, Self>,
@@ -634,9 +636,11 @@ impl<T: Backing> UhProcessor<'_, T> {
         panic!("unexpected debug exception in VTL {:?}", vtl);
     }
 
-    /// Puts the current virtual processor into the startup suspend state.
-    #[must_use = "failing to handle the error may lead to inconsistent VP state"]
-    fn startup_suspend(&mut self, startup_suspend: bool) -> Result<(), hcl::ioctl::Error> {
+    /// Sets the startup suspend state for VTL0 of this VP.
+    ///
+    /// Panics if called on a non-CVM.
+    fn set_vtl0_startup_suspend(&mut self, startup_suspend: bool) -> Result<(), hcl::ioctl::Error> {
+        assert!(!self.partition.isolation.is_hardware_isolated());
         // Hold the APs in the startup suspend state by setting the internal activity register.
         // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
         let reg = u64::from(
@@ -718,40 +722,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         mut stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
-        if !self.vp_index().is_bsp() && self.deferred_init {
-            // Suspending the BSP would break the VM down.
-            let result = self.startup_suspend(!self.vp_index().is_bsp());
-
-            #[cfg(guest_arch = "aarch64")]
-            result.expect("failed to set startup suspend state");
-
-            // Old x86_64 hypervisors may not support setting the internal activity register,
-            // fall back to sending INIT.
-            #[cfg(guest_arch = "x86_64")]
-            if let Err(e) = result {
-                // The ioctl set_vp_register path does not tell us hv_status
-                // directly, so just log if it failed for any reason.
-                tracing::warn!(
-                    error = &e as &dyn std::error::Error,
-                    "unable to set internal activity register"
-                );
-            }
-
-            // The VP in the INIT state is the architectural default.
-            #[cfg(guest_arch = "x86_64")]
-            self.partition.request_msi(
-                GuestVtl::Vtl0,
-                virt::irqcon::MsiRequest::new_x86(
-                    virt::irqcon::DeliveryMode::INIT,
-                    self.inner.vp_info.apic_id,
-                    false,
-                    0,
-                    true,
-                ),
-            );
-
-            self.deferred_init = false;
-        }
+        T::pre_run_vp(self);
 
         if self.runner.is_sidecar() {
             if self.force_exit_sidecar && !self.signaled_sidecar_exit {
@@ -924,7 +895,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl2: VtlArray::new(false),
             },
             exit_activities: Default::default(),
-            deferred_init: true,
         };
 
         T::init(&mut vp);

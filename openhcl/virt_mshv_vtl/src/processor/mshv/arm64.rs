@@ -120,7 +120,13 @@ impl BackingPrivate for HypervisorBackedArm64 {
         })
     }
 
-    fn init(_this: &mut UhProcessor<'_, Self>) {}
+    fn init(this: &mut UhProcessor<'_, Self>) {
+        // The hypervisor initializes startup suspend to false. Set it to the
+        // architectural default.
+        if !this.vp_index().is_bsp() {
+            this.set_startup_suspend(true).unwrap();
+        }
+    }
 
     type StateAccess<'p, 'a>
         = UhVpStateAccess<'a, 'p, Self>
@@ -938,10 +944,9 @@ mod save_restore {
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            self.deferred_init = false;
             self.runner.cpu_context_mut().x = state.x;
             self.runner.cpu_context_mut().q = state.q;
-            self.startup_suspend(state.startup_suspend)
+            self.set_startup_suspend(state.startup_suspend)
                 .expect("setting startup suspend should not fail");
             Ok(())
         }
