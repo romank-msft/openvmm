@@ -2031,6 +2031,8 @@ mod save_restore {
                 backing: _,
                 // Currently only meaningful for CVMs
                 exit_activities: _,
+                // Tracks deferred startup suspend initialization, which is not saved/restored
+                deferred_init: _,
             } = self;
 
             let per_vtl = [GuestVtl::Vtl0, GuestVtl::Vtl1]
@@ -2209,34 +2211,26 @@ mod save_restore {
                 Some(false) | None => false,
             };
 
-            if inject_startup_suspend {
-                let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
-                // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
-                let result = self.runner.set_vp_registers(
-                    GuestVtl::Vtl0,
-                    [(HvX64RegisterName::InternalActivityState, reg)],
+            if inject_startup_suspend && let Err(e) = self.startup_suspend(true) {
+                // The ioctl set_vp_register path does not tell us hv_status
+                // directly, so just log if it failed for any reason.
+                tracing::warn!(
+                    error = &e as &dyn std::error::Error,
+                    "unable to set internal activity register, falling back to init"
                 );
 
-                if let Err(e) = result {
-                    // The ioctl set_vp_register path does not tell us hv_status
-                    // directly, so just log if it failed for any reason.
-                    tracing::warn!(
-                        error = &e as &dyn std::error::Error,
-                        "unable to set internal activity register, falling back to init"
-                    );
-
-                    self.partition.request_msi(
-                        GuestVtl::Vtl0,
-                        MsiRequest::new_x86(
-                            virt::irqcon::DeliveryMode::INIT,
-                            self.inner.vp_info.apic_id,
-                            false,
-                            0,
-                            true,
-                        ),
-                    );
-                }
+                self.partition.request_msi(
+                    GuestVtl::Vtl0,
+                    MsiRequest::new_x86(
+                        virt::irqcon::DeliveryMode::INIT,
+                        self.inner.vp_info.apic_id,
+                        false,
+                        0,
+                        true,
+                    ),
+                );
             }
+            self.deferred_init = false;
 
             Ok(())
         }
