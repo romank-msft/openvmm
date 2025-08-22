@@ -635,22 +635,6 @@ impl<T: Backing> UhProcessor<'_, T> {
 
         panic!("unexpected debug exception in VTL {:?}", vtl);
     }
-
-    /// Sets the startup suspend state for VTL0 of this VP.
-    ///
-    /// Panics if called on a CVM.
-    fn set_vtl0_startup_suspend(&mut self, startup_suspend: bool) -> Result<(), hcl::ioctl::Error> {
-        assert!(!self.partition.isolation.is_hardware_isolated());
-        // Hold the APs in the startup suspend state by setting the internal activity register.
-        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
-        let reg = u64::from(
-            hvdef::HvInternalActivityRegister::new().with_startup_suspend(startup_suspend),
-        );
-        self.runner.set_vp_registers(
-            GuestVtl::Vtl0,
-            [(hvdef::HvAllArchRegisterName::InternalActivityState, reg)],
-        )
-    }
 }
 
 #[cfg(guest_arch = "x86_64")]
