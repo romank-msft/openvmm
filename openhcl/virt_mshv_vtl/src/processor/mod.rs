@@ -638,7 +638,7 @@ impl<T: Backing> UhProcessor<'_, T> {
 
     /// Sets the startup suspend state for VTL0 of this VP.
     ///
-    /// Panics if called on a non-CVM.
+    /// Panics if called on a CVM.
     fn set_vtl0_startup_suspend(&mut self, startup_suspend: bool) -> Result<(), hcl::ioctl::Error> {
         assert!(!self.partition.isolation.is_hardware_isolated());
         // Hold the APs in the startup suspend state by setting the internal activity register.
