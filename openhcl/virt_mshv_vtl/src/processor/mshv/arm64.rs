@@ -121,7 +121,14 @@ impl BackingPrivate for HypervisorBackedArm64 {
         })
     }
 
-    fn init(_this: &mut UhProcessor<'_, Self>) {}
+    fn init(this: &mut UhProcessor<'_, Self>) {
+        // The hypervisor initializes startup suspend to false. Set it to the
+        // architectural default.
+        if !this.vp_index().is_bsp() {
+            this.set_vtl0_startup_suspend(true)
+                .expect("setting startup suspend should succeed");
+        }
+    }
 
     type StateAccess<'p, 'a>
         = UhVpStateAccess<'a, 'p, Self>
@@ -258,6 +265,23 @@ impl BackingPrivate for HypervisorBackedArm64 {
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
+    /// Sets the startup suspend state for VTL0 of this VP.
+    ///
+    /// If `startup_suspend` is `true`, hold the VP in the startup suspend state by setting
+    /// the internal activity register. In the opposite case, clear the startup suspend state
+    /// thus letting the VP run.
+    fn set_vtl0_startup_suspend(&mut self, startup_suspend: bool) -> Result<(), ioctl::Error> {
+        let reg = u64::from(
+            hvdef::HvInternalActivityRegister::new().with_startup_suspend(startup_suspend),
+        );
+        // Non-VTL0 VPs should never be in startup suspend, so
+        // we only need to handle VTL0.
+        self.runner.set_vp_registers(
+            GuestVtl::Vtl0,
+            [(HvArm64RegisterName::InternalActivityState, reg)],
+        )
+    }
+
     fn intercepted_vtl(
         message_header: &hvdef::HvArm64InterceptMessageHeader,
     ) -> Result<GuestVtl, UnsupportedGuestVtl> {
@@ -946,23 +970,8 @@ mod save_restore {
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             self.runner.cpu_context_mut().x = state.x;
             self.runner.cpu_context_mut().q = state.q;
-            if state.startup_suspend {
-                let reg = u64::from(HvInternalActivityRegister::new().with_startup_suspend(true));
-                self.runner
-                    .set_vp_registers(
-                        // Non-VTL0 VPs should never be in startup suspend, so we only need to handle VTL0.
-                        // The hypervisor handles halt and idle for us.
-                        GuestVtl::Vtl0,
-                        [(HvArm64RegisterName::InternalActivityState, reg)],
-                    )
-                    .map_err(|err| {
-                        RestoreError::Other(anyhow!(
-                            "unable to set internal activity register: {}",
-                            err
-                        ))
-                    })?;
-            }
-
+            self.set_vtl0_startup_suspend(state.startup_suspend)
+                .expect("setting startup suspend should succeed");
             Ok(())
         }
     }
