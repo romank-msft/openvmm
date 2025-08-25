@@ -42,10 +42,7 @@ impl UhProcessor<'_, HypervisorBacked> {
     /// If `startup_suspend` is `true`, hold the VP in the startup suspend state by setting
     /// the internal activity register. In the opposie case, clear the startup suspend state
     /// thus letting the VP run.
-    ///
-    /// Panics if called on a CVM.
     fn set_vtl0_startup_suspend(&mut self, startup_suspend: bool) -> Result<(), hcl::ioctl::Error> {
-        assert!(!self.partition.isolation.is_hardware_isolated());
         let reg = u64::from(
             hvdef::HvInternalActivityRegister::new().with_startup_suspend(startup_suspend),
         );
