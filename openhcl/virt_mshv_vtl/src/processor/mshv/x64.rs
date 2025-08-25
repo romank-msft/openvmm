@@ -185,13 +185,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         // The hypervisor initializes startup suspend to false. Set it to the
         // architectural default.
         if !this.vp_index().is_bsp() {
-            if let Err(e) = this.set_vtl0_startup_suspend(true) {
-                tracelimit::warn_ratelimited!(
-                    error = &e as &dyn std::error::Error,
-                    "unable to set internal activity register, falling back to deferred init"
-                );
-                this.backing.deferred_init = true;
-            }
+            this.backing.deferred_init = true;
         }
     }
 
